@@ -1,0 +1,1171 @@
+import { useCallback, useEffect, useRef, useState } from 'react'
+import type {
+  AppSettings,
+  Flf2vGenerateDraft,
+  FlfMode,
+  I2vGenerateDraft,
+  ImageItem,
+  SharedComfyDraft
+} from '../types'
+import {
+  DEFAULT_FLF2V_GENERATE_DRAFT,
+  DEFAULT_I2V_GENERATE_DRAFT,
+  framesFromSeconds,
+  type VideoGenerateParams
+} from '../defaults/i2vGenerate'
+import { modelsRootFromDownloadFolder } from '../types'
+import {
+  basenamePath,
+  COMFY_BASE_URL,
+  generateWan22LoopWithComfy,
+  interruptComfyGeneration,
+  probeComfyOnline
+} from '../services/comfyWan22Loop'
+import { parentDir } from '../services/comfyI2v'
+import { ResourceMonitorPane } from './ResourceMonitorPane'
+import { ExtraLoraDialog } from './ExtraLoraDialog'
+import {
+  ASPECT_PRESET_OPTIONS,
+  ASPECT_PRESETS,
+  DEFAULT_ASPECT_PRESET,
+  DEFAULT_RESOLUTION_PRESET,
+  loadImageNaturalSize,
+  RESOLUTION_PRESET_OPTIONS,
+  resolveWanResolution,
+  isAspectPreset,
+  isResolutionPreset
+} from '../utils/wanResolution'
+
+type Panel = 'i2v' | 'flf2v' | 'loop'
+
+interface Props {
+  panel: Panel
+  settings: AppSettings
+  sharedComfy: SharedComfyDraft
+  draft: I2vGenerateDraft | Flf2vGenerateDraft
+  /** Start / loop frame from Prompt tab selection. */
+  startImagePath: string
+  /** English prompt from Prompt tab. */
+  promptText: string
+  /** Image list from the Prompt tab folder. */
+  promptImages: ImageItem[]
+  onSelectStartImage: (imagePath: string) => void
+  onSharedComfyChange: (shared: SharedComfyDraft) => void
+  onDraftChange: (draft: I2vGenerateDraft | Flf2vGenerateDraft) => void
+  onStatus: (msg: string, isError?: boolean, options?: { sticky?: boolean }) => void
+}
+
+interface GalleryVideo {
+  path: string
+  name: string
+  mtimeMs: number
+}
+
+const SAMPLERS = [
+  'euler',
+  'euler_ancestral',
+  'heun',
+  'dpmpp_2m',
+  'dpmpp_2m_sde',
+  'uni_pc'
+] as const
+
+const SCHEDULERS = [
+  'simple',
+  'normal',
+  'karras',
+  'exponential',
+  'sgm_uniform',
+  'beta'
+] as const
+
+function uniqueDirs(paths: string[], extraDirs: string[] = []): string[] {
+  const seen = new Set<string>()
+  const out: string[] = []
+  const addDir = (dir: string) => {
+    const trimmed = dir.trim()
+    if (!trimmed) return
+    const key = trimmed.replace(/\\/g, '/').toLowerCase()
+    if (seen.has(key)) return
+    seen.add(key)
+    out.push(trimmed)
+  }
+  for (const d of extraDirs) addDir(d)
+  for (const p of paths) addDir(parentDir(p))
+  return out
+}
+
+function isFlfDraft(d: I2vGenerateDraft | Flf2vGenerateDraft): d is Flf2vGenerateDraft {
+  return 'flfMode' in d
+}
+
+export function GenerateView({
+  panel,
+  settings,
+  sharedComfy,
+  draft,
+  startImagePath,
+  promptText,
+  promptImages,
+  onSelectStartImage,
+  onSharedComfyChange,
+  onDraftChange,
+  onStatus
+}: Props) {
+  const [comfyOnline, setComfyOnline] = useState(false)
+  const [comfyBusy, setComfyBusy] = useState(false)
+  const [generating, setGenerating] = useState(false)
+  const [videos, setVideos] = useState<GalleryVideo[]>([])
+  const [selectedVideo, setSelectedVideo] = useState<string | null>(null)
+  const [monitorDevice, setMonitorDevice] = useState('cuda:0')
+
+  const [resolvedSize, setResolvedSize] = useState<{ width: number; height: number }>({
+    width: draft.width,
+    height: draft.height
+  })
+  const [ditModels, setDitModels] = useState<{ name: string; path: string }[]>([])
+  const [speedLoraModels, setSpeedLoraModels] = useState<{ name: string; path: string }[]>([])
+  const [wan22LoraModels, setWan22LoraModels] = useState<{ name: string; path: string }[]>([])
+  const [loraPopupOpen, setLoraPopupOpen] = useState(false)
+
+  const abortRef = useRef<AbortController | null>(null)
+  const draftRef = useRef(draft)
+  draftRef.current = draft
+  const sharedRef = useRef(sharedComfy)
+  sharedRef.current = sharedComfy
+  const startImageRef = useRef(startImagePath)
+  startImageRef.current = startImagePath
+  const promptTextRef = useRef(promptText)
+  promptTextRef.current = promptText
+
+  const patchDraft = useCallback(
+    (partial: Partial<I2vGenerateDraft & Flf2vGenerateDraft>) => {
+      onDraftChange({ ...draftRef.current, ...partial } as I2vGenerateDraft | Flf2vGenerateDraft)
+    },
+    [onDraftChange]
+  )
+
+  // Keep draft start image + prompt aligned with Prompt tab.
+  useEffect(() => {
+    const nextImage = startImagePath.trim()
+    const nextPrompt = promptText
+    const cur = draftRef.current
+    if (cur.selectedImagePath === nextImage && cur.prompt === nextPrompt) return
+    patchDraft({
+      selectedImagePath: nextImage,
+      prompt: nextPrompt
+    })
+  }, [startImagePath, promptText, patchDraft, panel])
+
+  // Preview computed WAN Div32 size from xxxP + aspect / start image.
+  useEffect(() => {
+    let cancelled = false
+    const preset = isResolutionPreset(draft.resolutionPreset)
+      ? draft.resolutionPreset
+      : DEFAULT_RESOLUTION_PRESET
+    const aspectKey = isAspectPreset(draft.aspectPreset)
+      ? draft.aspectPreset
+      : DEFAULT_ASPECT_PRESET
+    const fallback = ASPECT_PRESETS[aspectKey] || ASPECT_PRESETS[DEFAULT_ASPECT_PRESET]
+
+    void (async () => {
+      let aspectW = fallback.w
+      let aspectH = fallback.h
+      if (draft.scaleFromImage && startImagePath.trim()) {
+        try {
+          const size = await loadImageNaturalSize(startImagePath.trim())
+          aspectW = size.width
+          aspectH = size.height
+        } catch {
+          /* keep aspect preset fallback */
+        }
+      }
+      if (cancelled) return
+      const next = resolveWanResolution({
+        resolutionPreset: preset,
+        aspectW,
+        aspectH
+      })
+      setResolvedSize(next)
+      if (draftRef.current.width !== next.width || draftRef.current.height !== next.height) {
+        patchDraft({ width: next.width, height: next.height })
+      }
+    })()
+
+    return () => {
+      cancelled = true
+    }
+  }, [
+    draft.resolutionPreset,
+    draft.scaleFromImage,
+    draft.aspectPreset,
+    startImagePath,
+    patchDraft
+  ])
+
+  const patchShared = useCallback(
+    (partial: Partial<SharedComfyDraft>) => {
+      onSharedComfyChange({ ...sharedRef.current, ...partial })
+    },
+    [onSharedComfyChange]
+  )
+
+  // List DiT models from Settings → DiT model folder.
+  useEffect(() => {
+    const folder = sharedComfy.ditModelFolder.trim()
+    let cancelled = false
+    if (!folder) {
+      setDitModels([])
+      return
+    }
+    void window.api.listModelFiles(folder).then((files) => {
+      if (!cancelled) setDitModels(files)
+    })
+    return () => {
+      cancelled = true
+    }
+  }, [sharedComfy.ditModelFolder])
+
+  useEffect(() => {
+    const folder = sharedComfy.speedLoraFolder.trim()
+    let cancelled = false
+    if (!folder) {
+      setSpeedLoraModels([])
+      return
+    }
+    void window.api.listModelFiles(folder).then((files) => {
+      if (!cancelled) setSpeedLoraModels(files)
+    })
+    return () => {
+      cancelled = true
+    }
+  }, [sharedComfy.speedLoraFolder])
+
+  useEffect(() => {
+    const folder = sharedComfy.wan22LoraFolder.trim()
+    let cancelled = false
+    if (!folder) {
+      setWan22LoraModels([])
+      return
+    }
+    void window.api.listModelFiles(folder).then((files) => {
+      if (!cancelled) setWan22LoraModels(files)
+    })
+    return () => {
+      cancelled = true
+    }
+  }, [sharedComfy.wan22LoraFolder])
+
+  useEffect(() => {
+    let cancelled = false
+    void (async () => {
+      try {
+        const devices = await window.api.listGpuDevices()
+        if (!cancelled && devices[0]?.id) setMonitorDevice(devices[0].id)
+      } catch {
+        /* keep default */
+      }
+    })()
+    return () => {
+      cancelled = true
+    }
+  }, [])
+
+  const refreshGallery = useCallback(async () => {
+    const folder = sharedRef.current.outputFolder.trim()
+    if (!folder) {
+      setVideos([])
+      setSelectedVideo(null)
+      return
+    }
+    try {
+      const res = await window.api.galleryListVideos({ outputFolder: folder })
+      if (!res.ok) {
+        onStatus(res.error || 'Failed to list gallery videos', true)
+        return
+      }
+      setVideos(res.videos)
+      setSelectedVideo((prev) =>
+        prev && res.videos.some((v) => v.path === prev)
+          ? prev
+          : (res.videos[0]?.path ?? null)
+      )
+    } catch (err) {
+      onStatus(err instanceof Error ? err.message : String(err), true)
+    }
+  }, [onStatus])
+
+  useEffect(() => {
+    void refreshGallery()
+  }, [sharedComfy.outputFolder, refreshGallery])
+
+  useEffect(() => {
+    let cancelled = false
+    const tick = async () => {
+      try {
+        const online = await probeComfyOnline()
+        if (!cancelled) setComfyOnline(online)
+      } catch {
+        if (!cancelled) setComfyOnline(false)
+      }
+    }
+    void tick()
+    const id = window.setInterval(() => void tick(), 4000)
+    return () => {
+      cancelled = true
+      window.clearInterval(id)
+    }
+  }, [])
+
+  const ensureComfyOnline = async (): Promise<boolean> => {
+    if (await probeComfyOnline()) {
+      setComfyOnline(true)
+      return true
+    }
+    const bat = sharedRef.current.comfyUiBatPath.trim()
+    if (!bat) {
+      onStatus('Set ComfyUI launch bat in Settings → ComfyUI', true)
+      return false
+    }
+    setComfyBusy(true)
+    onStatus('Starting ComfyUI…', false, { sticky: true })
+    try {
+      const s = sharedRef.current
+      const d = draftRef.current
+      const ditFolders = uniqueDirs([s.highDitPath, s.lowDitPath], [s.ditModelFolder])
+      const vaeFolders = uniqueDirs([s.vaePath])
+      const clipFolders = uniqueDirs([s.clipPath])
+      const extraPaths = [
+        ...(d.extraLorasHigh || []).map((e) => e.path),
+        ...(d.extraLorasLow || []).map((e) => e.path)
+      ]
+      const loraFolders = uniqueDirs(
+        [d.loraHighPath, d.loraLowPath, ...extraPaths],
+        [s.speedLoraFolder, s.wan22LoraFolder]
+      )
+      const result = await window.api.startComfyUi({
+        batPath: bat,
+        pythonPath: settings.pythonPath.trim() || undefined,
+        modelsRoot: modelsRootFromDownloadFolder(settings.downloadFolder),
+        ditFolders,
+        vaeFolders,
+        clipFolders,
+        loraFolders
+      })
+      if (!result.ok) {
+        onStatus(result.error || 'Failed to start ComfyUI', true)
+        return false
+      }
+      for (let i = 0; i < 60; i++) {
+        if (await probeComfyOnline()) {
+          setComfyOnline(true)
+          onStatus(result.alreadyRunning ? 'ComfyUI already online' : 'ComfyUI is online')
+          return true
+        }
+        await new Promise((r) => setTimeout(r, 1000))
+      }
+      onStatus('ComfyUI started but did not become ready in time', true)
+      return false
+    } catch (err) {
+      onStatus(err instanceof Error ? err.message : String(err), true)
+      return false
+    } finally {
+      setComfyBusy(false)
+    }
+  }
+
+  const startComfy = async () => {
+    await ensureComfyOnline()
+  }
+
+  const stopComfy = async () => {
+    setComfyBusy(true)
+    try {
+      await window.api.stopComfyUi()
+      setComfyOnline(false)
+      onStatus('ComfyUI stopped')
+    } catch (err) {
+      onStatus(err instanceof Error ? err.message : String(err), true)
+    } finally {
+      setComfyBusy(false)
+    }
+  }
+
+  const abortGenerate = async () => {
+    abortRef.current?.abort()
+    try {
+      await interruptComfyGeneration(COMFY_BASE_URL)
+    } catch {
+      /* ignore */
+    }
+    setGenerating(false)
+    onStatus('Generation aborted')
+  }
+
+  const runGenerate = async () => {
+    const d = draftRef.current
+    const s = sharedRef.current
+    const flf = isFlfDraft(d) ? d : null
+    const mode =
+      panel === 'i2v' ? 'i2v' : flf?.flfMode === 'wanfun_inpaint' ? 'wanfun_inpaint' : 'flf2v'
+    const isLoop = panel === 'loop'
+
+    const startPath = startImageRef.current.trim() || d.selectedImagePath.trim()
+    const prompt = d.prompt.trim() || promptTextRef.current.trim()
+    const endPath = isLoop ? startPath : (flf?.endImagePath || '').trim()
+
+    if (!startPath) {
+      onStatus(
+        isLoop
+          ? 'Select a loop frame in the Prompt tab first'
+          : 'Select an image in the Prompt tab first',
+        true
+      )
+      return
+    }
+    if (mode !== 'i2v' && !endPath) {
+      onStatus('Select an end frame image for FLF2V / WanFunInpaint', true)
+      return
+    }
+    if (!prompt) {
+      onStatus('Generate or enter a prompt in the Prompt tab first', true)
+      return
+    }
+
+    const preset = isResolutionPreset(d.resolutionPreset)
+      ? d.resolutionPreset
+      : DEFAULT_RESOLUTION_PRESET
+    const aspectKey = isAspectPreset(d.aspectPreset) ? d.aspectPreset : DEFAULT_ASPECT_PRESET
+    const fallbackAspect = ASPECT_PRESETS[aspectKey] || ASPECT_PRESETS[DEFAULT_ASPECT_PRESET]
+    let aspectW = fallbackAspect.w
+    let aspectH = fallbackAspect.h
+    if (d.scaleFromImage) {
+      try {
+        const size = await loadImageNaturalSize(startPath)
+        aspectW = size.width
+        aspectH = size.height
+      } catch {
+        onStatus('Could not read start image size — using aspect preset', true)
+      }
+    }
+    const { width, height } = resolveWanResolution({
+      resolutionPreset: preset,
+      aspectW,
+      aspectH
+    })
+    patchDraft({ width, height })
+    setResolvedSize({ width, height })
+
+    if (!s.highDitPath.trim() || !s.lowDitPath.trim() || !s.vaePath.trim() || !s.clipPath.trim()) {
+      onStatus('Set High/Low DiT here, and VAE + CLIP/UMT5 in Settings → ComfyUI', true)
+      return
+    }
+    if (!s.outputFolder.trim()) {
+      onStatus('Set Output folder in Settings → ComfyUI', true)
+      return
+    }
+    if (
+      (Boolean(d.loraHighPath.trim()) && !d.loraLowPath.trim()) ||
+      (!d.loraHighPath.trim() && Boolean(d.loraLowPath.trim()))
+    ) {
+      onStatus('Speed LoRA: set both high and low, or choose -NONE- for both', true)
+      return
+    }
+
+    const useSpeedLora = Boolean(d.loraHighPath.trim() && d.loraLowPath.trim())
+    const lengthFrames = framesFromSeconds(d.seconds, d.fps)
+    const modeLabel =
+      panel === 'loop'
+        ? mode === 'wanfun_inpaint'
+          ? 'LOOP · WanFunInpaint'
+          : 'LOOP'
+        : mode === 'i2v'
+          ? 'I2V'
+          : mode === 'flf2v'
+            ? 'FLF2V'
+            : 'WanFunInpaint'
+
+    const report = (step: number, total: number, detail: string) => {
+      onStatus(`[${step}/${total}] ${detail}`, false, { sticky: true })
+    }
+
+    report(1, 8, `Checking ComfyUI online (${modeLabel})…`)
+    const online = await ensureComfyOnline()
+    if (!online) return
+
+    abortRef.current?.abort()
+    const ac = new AbortController()
+    abortRef.current = ac
+    setGenerating(true)
+
+    try {
+      report(
+        2,
+        8,
+        `Prepare ${modeLabel}: ${width}×${height}, ${lengthFrames} frames @ ${d.fps}fps, steps ${d.steps} (refiner ${d.refinerStep})`
+      )
+
+      report(3, 8, `Uploading start image… (${basenamePath(startPath)})`)
+      const uploadedStart = await window.api.comfyUploadImage({
+        imagePath: startPath,
+        baseUrl: COMFY_BASE_URL
+      })
+
+      let uploadedEnd: { name: string; subfolder?: string } | undefined
+      if (mode !== 'i2v' && endPath) {
+        if (isLoop && endPath === startPath) {
+          report(4, 8, 'End frame = start frame (loop) — reusing upload')
+          uploadedEnd = uploadedStart
+        } else {
+          report(4, 8, `Uploading end image… (${basenamePath(endPath)})`)
+          uploadedEnd = await window.api.comfyUploadImage({
+            imagePath: endPath,
+            baseUrl: COMFY_BASE_URL
+          })
+        }
+      } else {
+        report(4, 8, 'No end frame required (I2V)')
+      }
+
+      report(
+        5,
+        8,
+        `ComfyUI generate: seed ${d.seed < 0 ? 'random' : d.seed}, sampler ${d.sampler}/${d.scheduler}` +
+          (useSpeedLora ? ', Speed LoRA on' : '')
+      )
+      const result = await generateWan22LoopWithComfy(
+        {
+          mode,
+          prompt,
+          negative: d.negative,
+          steps: d.steps,
+          refinerStep: d.refinerStep,
+          cfg: d.cfg,
+          cfgHigh: d.cfgHigh,
+          seed: d.seed,
+          width,
+          height,
+          seconds: d.seconds,
+          fps: d.fps,
+          shift: d.shift,
+          sampler: d.sampler,
+          scheduler: d.scheduler,
+          highDitName: basenamePath(s.highDitPath),
+          lowDitName: basenamePath(s.lowDitPath),
+          vaeName: basenamePath(s.vaePath),
+          clipName: basenamePath(s.clipPath),
+          loraHighName: useSpeedLora ? basenamePath(d.loraHighPath) : undefined,
+          loraLowName: useSpeedLora ? basenamePath(d.loraLowPath) : undefined,
+          loraHighStrength: d.loraHighStrength,
+          loraLowStrength: d.loraLowStrength,
+          useLightningLora: useSpeedLora,
+          extraLorasHigh: (d.extraLorasHigh || [])
+            .filter((e) => e.enabled !== false && e.path.trim())
+            .map((e) => ({
+              name: basenamePath(e.path),
+              strength: e.strength
+            })),
+          extraLorasLow: (d.extraLorasLow || [])
+            .filter((e) => e.enabled !== false && e.path.trim())
+            .map((e) => ({
+              name: basenamePath(e.path),
+              strength: e.strength
+            })),
+          uploadedStartImage: uploadedStart.name,
+          uploadedStartSubfolder: uploadedStart.subfolder,
+          uploadedEndImage: uploadedEnd?.name,
+          uploadedEndSubfolder: uploadedEnd?.subfolder,
+          savePrefix: isLoop
+            ? mode === 'wanfun_inpaint'
+              ? 'loop/Wan2.2_loop_inpaint'
+              : 'loop/Wan2.2_loop'
+            : undefined
+        },
+        {
+          signal: ac.signal,
+          baseUrl: COMFY_BASE_URL,
+          onProgress: (msg) => {
+            if (ac.signal.aborted) return
+            onStatus(`[5/8] ${msg}`, false, { sticky: true })
+          }
+        }
+      )
+
+      if (ac.signal.aborted) return
+
+      const videoRef = result.videos[0]
+      report(
+        6,
+        8,
+        `Resolve output… (${videoRef.subfolder ? `${videoRef.subfolder}/` : ''}${videoRef.filename})`
+      )
+      const resolved = await window.api.comfyResolveImagePath({
+        filename: videoRef.filename,
+        subfolder: videoRef.subfolder,
+        type: videoRef.type
+      })
+      if (!resolved.ok || !resolved.path) {
+        throw new Error(resolved.error || 'Could not resolve ComfyUI video path')
+      }
+
+      report(7, 8, `Save to gallery… → ${s.outputFolder.trim()}`)
+      const saved = await window.api.gallerySaveVideo({
+        sourcePath: resolved.path,
+        outputFolder: s.outputFolder.trim()
+      })
+      if (!saved.ok || !saved.path) {
+        throw new Error(saved.error || 'Failed to save video to gallery')
+      }
+
+      report(8, 8, 'Refresh gallery…')
+      await refreshGallery()
+      setSelectedVideo(saved.path)
+      onStatus(
+        `[8/8] Done — ${modeLabel}, seed ${result.seed}, ${result.length} frames, ${width}×${height}`
+      )
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err)
+      if (msg === 'Generation cancelled') {
+        onStatus('Generation cancelled')
+        return
+      }
+      onStatus(msg, true)
+    } finally {
+      if (abortRef.current === ac) abortRef.current = null
+      setGenerating(false)
+    }
+  }
+
+  const frameCount = framesFromSeconds(draft.seconds, draft.fps)
+  const defaults = panel === 'i2v' ? DEFAULT_I2V_GENERATE_DRAFT : DEFAULT_FLF2V_GENERATE_DRAFT
+  const flfMode: FlfMode = isFlfDraft(draft) ? draft.flfMode : 'flf2v'
+  const endImagePath = isFlfDraft(draft) ? draft.endImagePath : ''
+
+  const numField = (
+    label: string,
+    key: keyof VideoGenerateParams,
+    opts?: { step?: number; min?: number; max?: number }
+  ) => (
+    <label className="field">
+      <span>{label}</span>
+      <input
+        type="number"
+        value={Number(draft[key])}
+        step={opts?.step ?? 1}
+        min={opts?.min}
+        max={opts?.max}
+        onChange={(e) => patchDraft({ [key]: Number(e.target.value) })}
+      />
+    </label>
+  )
+
+  const ditModelSelect = (label: string, key: 'highDitPath' | 'lowDitPath') => {
+    const folder = sharedComfy.ditModelFolder.trim()
+    const value = String(sharedComfy[key] ?? '')
+    const known = ditModels.some((m) => m.path === value)
+    return (
+      <label className="field">
+        <span>{label}</span>
+        <select
+          value={known ? value : value ? value : ''}
+          disabled={!folder || ditModels.length === 0}
+          onChange={(e) => patchShared({ [key]: e.target.value })}
+        >
+          <option value="" disabled>
+            {!folder
+              ? 'Set DiT model folder in Settings'
+              : ditModels.length === 0
+                ? 'No models in folder'
+                : 'Select DiT model…'}
+          </option>
+          {!known && value ? (
+            <option value={value}>{basenamePath(value)} (not in folder)</option>
+          ) : null}
+          {ditModels.map((m) => (
+            <option key={m.path} value={m.path}>
+              {m.name}
+            </option>
+          ))}
+        </select>
+      </label>
+    )
+  }
+
+  const speedLoraSelect = (
+    label: string,
+    key: 'loraHighPath' | 'loraLowPath',
+    strengthKey: 'loraHighStrength' | 'loraLowStrength'
+  ) => {
+    const value = String(draft[key] ?? '')
+    const known = speedLoraModels.some((m) => m.path === value)
+    const onPick = (nextPath: string) => {
+      const otherKey = key === 'loraHighPath' ? 'loraLowPath' : 'loraHighPath'
+      const otherPath = String(draft[otherKey] ?? '').trim()
+      const bothOn = Boolean(nextPath.trim() && otherPath)
+      const next: Partial<VideoGenerateParams> = {
+        [key]: nextPath,
+        useLightningLora: bothOn
+      }
+      if (bothOn) {
+        if (draft.steps === 20) next.steps = 8
+        if (draft.cfg === 3.5) next.cfg = 1
+        if (draft.cfgHigh === 3.5) next.cfgHigh = 5
+      } else if (!nextPath.trim() || !otherPath) {
+        if (draft.steps === 8 || draft.steps === 4) next.steps = 20
+        if (draft.cfg === 1) next.cfg = 3.5
+      }
+      patchDraft(next)
+    }
+    return (
+      <label className="field">
+        <span>{label}</span>
+        <div className="generate-speed-lora-row">
+          <select
+            value={known ? value : value ? value : ''}
+            onChange={(e) => onPick(e.target.value)}
+          >
+            <option value="">-NONE-</option>
+            {!known && value ? (
+              <option value={value}>{basenamePath(value)} (not in folder)</option>
+            ) : null}
+            {speedLoraModels.map((m) => (
+              <option key={m.path} value={m.path}>
+                {m.name}
+              </option>
+            ))}
+          </select>
+          <input
+            type="number"
+            className="generate-speed-lora-weight"
+            value={Number(draft[strengthKey])}
+            step={0.05}
+            min={0}
+            max={2}
+            title="Weight"
+            disabled={!value}
+            onChange={(e) => patchDraft({ [strengthKey]: Number(e.target.value) })}
+          />
+        </div>
+      </label>
+    )
+  }
+
+  const extraLorasHigh = draft.extraLorasHigh || []
+  const extraLorasLow = draft.extraLorasLow || []
+  const activeHigh = extraLorasHigh.filter((e) => e.enabled !== false && e.path.trim()).length
+  const activeLow = extraLorasLow.filter((e) => e.enabled !== false && e.path.trim()).length
+  const extraLoraCount = activeHigh + activeLow
+
+  return (
+    <div className="generate-view">
+      <div className="generate-body">
+        <aside className="generate-settings">
+          <div className="generate-settings-scroll">
+            <div className="lora-test-comfy-row">
+              <span className={`lora-test-comfy-dot${comfyOnline ? ' online' : ''}`} />
+              <span className="lora-test-comfy-label">
+                ComfyUI {comfyOnline ? 'online' : 'offline'}
+              </span>
+              <button type="button" disabled={comfyBusy || generating} onClick={() => void startComfy()}>
+                Start
+              </button>
+              <button type="button" disabled={comfyBusy || generating} onClick={() => void stopComfy()}>
+                Stop
+              </button>
+            </div>
+
+            {panel === 'flf2v' || panel === 'loop' ? (
+              <label className="field">
+                <span>Mode</span>
+                <div className="view-switch generate-mode-switch" role="tablist" aria-label="FLF mode">
+                  <button
+                    type="button"
+                    role="tab"
+                    className={`view-switch-seg${flfMode === 'flf2v' ? ' active' : ''}`}
+                    aria-selected={flfMode === 'flf2v'}
+                    onClick={() => patchDraft({ flfMode: 'flf2v' })}
+                  >
+                    FLF2V
+                  </button>
+                  <button
+                    type="button"
+                    role="tab"
+                    className={`view-switch-seg${flfMode === 'wanfun_inpaint' ? ' active' : ''}`}
+                    aria-selected={flfMode === 'wanfun_inpaint'}
+                    onClick={() => patchDraft({ flfMode: 'wanfun_inpaint' })}
+                  >
+                    WanFunInpaint
+                  </button>
+                </div>
+              </label>
+            ) : null}
+
+            {ditModelSelect('High noise DiT', 'highDitPath')}
+            {ditModelSelect('Low noise DiT', 'lowDitPath')}
+
+            {speedLoraSelect('Speed LoRA (high)', 'loraHighPath', 'loraHighStrength')}
+            {speedLoraSelect('Speed LoRA (low)', 'loraLowPath', 'loraLowStrength')}
+            {!sharedComfy.speedLoraFolder.trim() ? (
+              <p className="field-hint">Set Speed LoRA folder in Settings to list models.</p>
+            ) : null}
+
+            <div className="field generate-extra-loras">
+              <div className="generate-extra-loras-head">
+                <span>Extra LoRAs</span>
+                <button type="button" onClick={() => setLoraPopupOpen(true)}>
+                  Add LoRA
+                </button>
+              </div>
+              {!sharedComfy.wan22LoraFolder.trim() ? (
+                <p className="field-hint">Set Wan22 LoRA folder in Settings → ComfyUI.</p>
+              ) : (
+                <p className="field-hint">
+                  {extraLoraCount === 0
+                    ? 'No extra LoRAs — open the panel to add high / low LoRAs.'
+                    : `${extraLoraCount} active · High ${activeHigh} / Low ${activeLow}`}
+                </p>
+              )}
+            </div>
+
+            <label className="field">
+              <span>Resolution</span>
+              <select
+                value={
+                  isResolutionPreset(draft.resolutionPreset)
+                    ? draft.resolutionPreset
+                    : DEFAULT_RESOLUTION_PRESET
+                }
+                onChange={(e) => patchDraft({ resolutionPreset: e.target.value })}
+              >
+                {RESOLUTION_PRESET_OPTIONS.map((p) => (
+                  <option key={p} value={p}>
+                    {p}
+                  </option>
+                ))}
+              </select>
+            </label>
+
+            <label className="field checkbox-field">
+              <input
+                type="checkbox"
+                checked={draft.scaleFromImage}
+                onChange={(e) => patchDraft({ scaleFromImage: e.target.checked })}
+              />
+              <span>Scale from start image aspect</span>
+            </label>
+
+            {!draft.scaleFromImage ? (
+              <label className="field">
+                <span>Aspect</span>
+                <select
+                  value={
+                    isAspectPreset(draft.aspectPreset)
+                      ? draft.aspectPreset
+                      : DEFAULT_ASPECT_PRESET
+                  }
+                  onChange={(e) => patchDraft({ aspectPreset: e.target.value })}
+                >
+                  {ASPECT_PRESET_OPTIONS.map((a) => (
+                    <option key={a} value={a}>
+                      {a}
+                    </option>
+                  ))}
+                </select>
+              </label>
+            ) : null}
+
+            <p className="field-hint">
+              Size: {resolvedSize.width}×{resolvedSize.height} (WAN Div32, like workflow)
+            </p>
+
+            <div className="field-row-grid">
+              {numField('Seconds', 'seconds', { step: 0.5, min: 0.5, max: 60 })}
+              {numField('FPS', 'fps', { min: 1, max: 60 })}
+            </div>
+            <p className="field-hint">
+              Length: {frameCount} frames (round(seconds×fps/8)×8+1)
+            </p>
+            <div className="field-row-grid">
+              {numField('Steps', 'steps', { min: 1, max: 100 })}
+              {numField('Refiner step', 'refinerStep', { min: 1, max: 100 })}
+            </div>
+            <div className="field-row-grid">
+              {numField('CFG-HIGH', 'cfgHigh', { step: 0.1, min: 0, max: 30 })}
+              {numField('CFG (low)', 'cfg', { step: 0.1, min: 0, max: 30 })}
+            </div>
+            <div className="field-row-grid">
+              {numField('Seed (−1 = random)', 'seed')}
+              {numField('Shift', 'shift', { step: 0.1, min: 0, max: 20 })}
+            </div>
+
+            <div className="field-row-grid">
+              <label className="field">
+                <span>Sampler</span>
+                <select
+                  value={draft.sampler}
+                  onChange={(e) => patchDraft({ sampler: e.target.value })}
+                >
+                  {SAMPLERS.map((s) => (
+                    <option key={s} value={s}>
+                      {s}
+                    </option>
+                  ))}
+                  {!SAMPLERS.includes(draft.sampler as (typeof SAMPLERS)[number]) ? (
+                    <option value={draft.sampler}>{draft.sampler}</option>
+                  ) : null}
+                </select>
+              </label>
+              <label className="field">
+                <span>Scheduler</span>
+                <select
+                  value={draft.scheduler}
+                  onChange={(e) => patchDraft({ scheduler: e.target.value })}
+                >
+                  {SCHEDULERS.map((s) => (
+                    <option key={s} value={s}>
+                      {s}
+                    </option>
+                  ))}
+                  {!SCHEDULERS.includes(draft.scheduler as (typeof SCHEDULERS)[number]) ? (
+                    <option value={draft.scheduler}>{draft.scheduler}</option>
+                  ) : null}
+                </select>
+              </label>
+            </div>
+
+            <label className="field">
+              <span>Prompt (from Prompt tab)</span>
+              <textarea
+                rows={4}
+                value={draft.prompt}
+                onChange={(e) => patchDraft({ prompt: e.target.value })}
+                spellCheck={false}
+                placeholder="Select an image and generate a prompt in the Prompt tab"
+              />
+              <p className="field-hint">Synced from Prompt; edits here apply to this generate only.</p>
+            </label>
+
+            <label className="field">
+              <span>Negative</span>
+              <textarea
+                rows={3}
+                value={draft.negative}
+                onChange={(e) => patchDraft({ negative: e.target.value })}
+                spellCheck={false}
+                placeholder={defaults.negative.slice(0, 40) + '…'}
+              />
+            </label>
+
+            <div className="field">
+              <span>
+                {panel === 'loop' ? 'Loop frame (Prompt images)' : 'Start frame (Prompt images)'}
+              </span>
+              {promptImages.length === 0 ? (
+                <p className="field-hint">No images — open a folder in the Prompt tab.</p>
+              ) : (
+                <div
+                  className="generate-prompt-image-list"
+                  role="listbox"
+                  aria-label={panel === 'loop' ? 'Loop frame' : 'Start frame'}
+                >
+                  {promptImages.map((img) => {
+                    const active =
+                      img.path === (startImagePath || draft.selectedImagePath)
+                    return (
+                      <button
+                        key={img.path}
+                        type="button"
+                        role="option"
+                        aria-selected={active}
+                        className={`generate-prompt-image-item${active ? ' active' : ''}${img.hasCaption ? ' has-caption' : ''}`}
+                        title={img.name}
+                        onClick={() => onSelectStartImage(img.path)}
+                      >
+                        <img src={window.api.toLocalUrl(img.path)} alt="" />
+                        <span className="generate-prompt-image-name">{img.name}</span>
+                      </button>
+                    )
+                  })}
+                </div>
+              )}
+              {panel === 'loop' ? (
+                <p className="field-hint">
+                  Used as both first and last frame (seamless loop).
+                </p>
+              ) : null}
+            </div>
+
+            {panel === 'flf2v' ? (
+              <div className="field">
+                <span>End frame (Prompt images)</span>
+                {promptImages.length === 0 ? (
+                  <p className="field-hint">No images — open a folder in the Prompt tab.</p>
+                ) : (
+                  <div className="generate-prompt-image-list" role="listbox" aria-label="End frame">
+                    {promptImages.map((img) => {
+                      const active = img.path === endImagePath
+                      return (
+                        <button
+                          key={`end-${img.path}`}
+                          type="button"
+                          role="option"
+                          aria-selected={active}
+                          className={`generate-prompt-image-item${active ? ' active' : ''}`}
+                          title={img.name}
+                          onClick={() => patchDraft({ endImagePath: img.path })}
+                        >
+                          <img src={window.api.toLocalUrl(img.path)} alt="" />
+                          <span className="generate-prompt-image-name">{img.name}</span>
+                        </button>
+                      )
+                    })}
+                  </div>
+                )}
+              </div>
+            ) : null}
+          </div>
+
+          <div className="generate-actions">
+            {generating ? (
+              <button
+                type="button"
+                className="danger lora-test-generate-btn"
+                onClick={() => void abortGenerate()}
+              >
+                Abort
+              </button>
+            ) : (
+              <button
+                type="button"
+                className="primary lora-test-generate-btn"
+                disabled={comfyBusy}
+                onClick={() => void runGenerate()}
+              >
+                Generate
+              </button>
+            )}
+          </div>
+        </aside>
+
+        <section className="generate-gallery">
+          <div className="generate-gallery-header">
+            <span>
+              {videos.length} video{videos.length === 1 ? '' : 's'}
+              {sharedComfy.outputFolder ? ` · ${sharedComfy.outputFolder}` : ''}
+            </span>
+            <div className="generate-gallery-header-actions">
+              <button type="button" onClick={() => void refreshGallery()}>
+                Refresh
+              </button>
+              <button
+                type="button"
+                disabled={!sharedComfy.outputFolder.trim()}
+                onClick={() => {
+                  void window.api.openPathInExplorer(sharedComfy.outputFolder.trim())
+                }}
+              >
+                Open folder
+              </button>
+            </div>
+          </div>
+
+          <div className="generate-source-previews">
+            {(startImagePath || draft.selectedImagePath) ? (
+              <div className="generate-source-preview">
+                <img
+                  src={window.api.toLocalUrl(startImagePath || draft.selectedImagePath)}
+                  alt={panel === 'loop' ? 'Loop' : 'Start'}
+                  title={startImagePath || draft.selectedImagePath}
+                />
+                <span className="generate-source-label">
+                  {panel === 'loop' ? 'Loop frame (Prompt)' : 'Start frame (Prompt)'}
+                </span>
+              </div>
+            ) : null}
+            {panel === 'flf2v' && endImagePath ? (
+              <div className="generate-source-preview">
+                <img
+                  src={window.api.toLocalUrl(endImagePath)}
+                  alt="End"
+                  title={endImagePath}
+                />
+                <span className="generate-source-label">End frame</span>
+              </div>
+            ) : null}
+          </div>
+
+          <div className="i2v-gallery">
+            {videos.length === 0 ? (
+              <div className="i2v-gallery-empty">
+                {sharedComfy.outputFolder
+                  ? 'No videos in output folder yet'
+                  : 'Choose an output folder to show the gallery'}
+              </div>
+            ) : (
+              videos.map((v) => (
+                <button
+                  key={v.path}
+                  type="button"
+                  className={`i2v-gallery-item${v.path === selectedVideo ? ' active' : ''}`}
+                  onClick={() => setSelectedVideo(v.path)}
+                  title={v.name}
+                >
+                  <video
+                    src={window.api.toLocalUrl(v.path)}
+                    muted
+                    loop
+                    playsInline
+                    onMouseEnter={(e) => {
+                      void e.currentTarget.play().catch(() => undefined)
+                    }}
+                    onMouseLeave={(e) => {
+                      e.currentTarget.pause()
+                      e.currentTarget.currentTime = 0
+                    }}
+                  />
+                  <span className="i2v-gallery-name">{v.name}</span>
+                </button>
+              ))
+            )}
+          </div>
+
+          {selectedVideo ? (
+            <div className="generate-video-player">
+              <video
+                key={selectedVideo}
+                src={window.api.toLocalUrl(selectedVideo)}
+                controls
+                autoPlay
+                loop
+              />
+              <button
+                type="button"
+                className="generate-show-in-folder"
+                onClick={() => {
+                  void window.api.showItemInFolder(selectedVideo)
+                }}
+              >
+                Show in folder
+              </button>
+            </div>
+          ) : null}
+        </section>
+
+        <aside className="generate-monitor">
+          <ResourceMonitorPane device={monitorDevice} />
+        </aside>
+      </div>
+
+      <ExtraLoraDialog
+        open={loraPopupOpen}
+        models={wan22LoraModels}
+        folderSet={Boolean(sharedComfy.wan22LoraFolder.trim())}
+        highLoras={extraLorasHigh}
+        lowLoras={extraLorasLow}
+        onChangeHigh={(extraLorasHigh) => patchDraft({ extraLorasHigh })}
+        onChangeLow={(extraLorasLow) => patchDraft({ extraLorasLow })}
+        onClose={() => setLoraPopupOpen(false)}
+      />
+    </div>
+  )
+}

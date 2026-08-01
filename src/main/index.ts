@@ -1,0 +1,1293 @@
+import { app, BrowserWindow, dialog, ipcMain, protocol, screen, Menu, shell } from 'electron'
+import { join, dirname, basename, extname, resolve as resolvePath, isAbsolute } from 'path'
+import { readFileSync, writeFileSync, existsSync, rmSync, copyFileSync } from 'fs'
+import { readFile, writeFile, readdir, access, constants, mkdir, stat, copyFile } from 'fs/promises'
+import { execFile } from 'child_process'
+import { promisify } from 'util'
+import {
+  cancelComfyInstall,
+  comfyStatus,
+  connectComfyProgressWs,
+  disconnectComfyProgressWs,
+  getComfyOutputDir,
+  installComfyUi,
+  isComfyServerOnline,
+  probeComfyBat,
+  resolveComfyImagePath,
+  setComfyLogListener,
+  startComfyUi,
+  stopComfyUi
+} from './comfyUiEnv'
+import {
+  cancelPythonInstall,
+  installPythonEnv,
+  probePython,
+  pythonInstallRunning
+} from './pythonEnv'
+import { getResourceStats, killProcessByPid } from './resourceStats'
+
+const execFileAsync = promisify(execFile)
+
+const IMAGE_EXTS = new Set(['.jpg', '.jpeg', '.png', '.webp', '.bmp', '.gif'])
+const MODEL_EXTS = new Set(['.safetensors', '.ckpt', '.pt'])
+const VIDEO_EXTS = new Set(['.mp4', '.webm', '.mov'])
+
+const WAN_DEFAULT_NEGATIVE =
+  '色调艳丽，过曝，静态，细节模糊不清，字幕，风格，作品，画作，画面，静止，整体发灰，最差质量，低质量，JPEG压缩残留，丑陋的，残缺的，多余的手指，画得不好的手部，画得不好的脸部，畸形的，毁容的，形态畸形的肢体，手指融合，静止不动的画面，杂乱的背景，三条腿，背景人很多，倒着走'
+
+// Avoid Chromium HTTP disk-cache corruption when loading many local-file:// thumbnails.
+app.commandLine.appendSwitch('disable-http-cache')
+app.commandLine.appendSwitch('disk-cache-size', '0')
+try {
+  const cacheDir = join(app.getPath('userData'), 'Cache')
+  if (existsSync(cacheDir)) {
+    rmSync(cacheDir, { recursive: true, force: true })
+  }
+} catch {
+  /* best-effort */
+}
+
+try {
+  app.setName('NIN I2V Maker')
+} catch {
+  /* ignore */
+}
+
+type TranslationProvider = 'lmstudio' | 'ollama'
+type UiGpuMode = 'auto' | 'software' | 'onboard'
+type ActiveView = 'prompt' | 'i2v' | 'flf2v' | 'loop'
+type FlfMode = 'flf2v' | 'wanfun_inpaint'
+
+interface PromptPreset {
+  id: string
+  name: string
+  prompt: string
+}
+
+interface SharedComfyDraft {
+  comfyUiBatPath: string
+  ditModelFolder: string
+  highDitPath: string
+  lowDitPath: string
+  speedLoraFolder: string
+  wan22LoraFolder: string
+  vaePath: string
+  clipPath: string
+  outputFolder: string
+}
+
+interface ExtraLoraEntry {
+  id: string
+  path: string
+  strength: number
+  enabled: boolean
+}
+
+interface VideoGenerateParams {
+  negative: string
+  steps: number
+  refinerStep: number
+  cfg: number
+  cfgHigh: number
+  seed: number
+  width: number
+  height: number
+  resolutionPreset: string
+  scaleFromImage: boolean
+  aspectPreset: string
+  seconds: number
+  fps: number
+  shift: number
+  sampler: string
+  scheduler: string
+  loraHighPath: string
+  loraLowPath: string
+  loraHighStrength: number
+  loraLowStrength: number
+  useLightningLora: boolean
+  extraLorasHigh: ExtraLoraEntry[]
+  extraLorasLow: ExtraLoraEntry[]
+  selectedImagePath: string
+  prompt: string
+}
+
+type I2vGenerateDraft = VideoGenerateParams
+
+interface Flf2vGenerateDraft extends VideoGenerateParams {
+  endImagePath: string
+  flfMode: FlfMode
+}
+
+type LoopGenerateDraft = Flf2vGenerateDraft
+
+interface AppSettings {
+  provider: TranslationProvider
+  lmStudioBaseUrl: string
+  ollamaBaseUrl: string
+  model: string
+  targetLanguage: string
+  lastFolder: string | null
+  imageFolders: string[]
+  promptPresets: PromptPreset[]
+  activePromptPresetId: string
+  sidebarWidth: number
+  rightPaneWidth: number
+  listViewMode: 'list' | 'thumbs'
+  thumbnailWidth: number
+  activeView: ActiveView
+  uiGpuMode: UiGpuMode
+  disableUiGpu: boolean
+  pythonPath: string
+  downloadFolder: string
+  promptImagePath: string
+  promptText: string
+  sharedComfy: SharedComfyDraft
+  i2vDraft: I2vGenerateDraft
+  flf2vDraft: Flf2vGenerateDraft
+  loopDraft: LoopGenerateDraft
+  windowWidth: number
+  windowHeight: number
+  windowX: number | null
+  windowY: number | null
+  windowMaximized: boolean
+}
+
+interface WindowState {
+  width: number
+  height: number
+  x: number | null
+  y: number | null
+  isMaximized: boolean
+}
+
+interface GpuDevice {
+  id: string
+  label: string
+}
+
+const FALLBACK_GPU: GpuDevice[] = [{ id: 'cuda:0', label: 'cuda:0 (not detected)' }]
+
+const DEFAULT_WINDOW: WindowState = {
+  width: 1280,
+  height: 840,
+  x: null,
+  y: null,
+  isMaximized: false
+}
+
+const DEFAULT_SHARED_COMFY: SharedComfyDraft = {
+  comfyUiBatPath: '',
+  ditModelFolder: '',
+  highDitPath: '',
+  lowDitPath: '',
+  speedLoraFolder: '',
+  wan22LoraFolder: '',
+  vaePath: '',
+  clipPath: '',
+  outputFolder: ''
+}
+
+const DEFAULT_VIDEO_PARAMS: VideoGenerateParams = {
+  negative: WAN_DEFAULT_NEGATIVE,
+  steps: 8,
+  refinerStep: 3,
+  cfg: 1,
+  cfgHigh: 5,
+  seed: -1,
+  width: 544,
+  height: 960,
+  resolutionPreset: '540p',
+  scaleFromImage: true,
+  aspectPreset: '9:16 - Social',
+  seconds: 5,
+  fps: 16,
+  shift: 8,
+  sampler: 'euler',
+  scheduler: 'simple',
+  loraHighPath: '',
+  loraLowPath: '',
+  loraHighStrength: 0.8,
+  loraLowStrength: 0.8,
+  useLightningLora: true,
+  extraLorasHigh: [],
+  extraLorasLow: [],
+  selectedImagePath: '',
+  prompt: ''
+}
+
+const DEFAULT_I2V_DRAFT: I2vGenerateDraft = { ...DEFAULT_VIDEO_PARAMS }
+
+const DEFAULT_FLF2V_DRAFT: Flf2vGenerateDraft = {
+  ...DEFAULT_VIDEO_PARAMS,
+  endImagePath: '',
+  flfMode: 'flf2v'
+}
+
+const DEFAULT_LOOP_DRAFT: LoopGenerateDraft = {
+  ...DEFAULT_VIDEO_PARAMS,
+  endImagePath: '',
+  flfMode: 'flf2v'
+}
+
+const DEFAULT_SETTINGS: AppSettings = {
+  provider: 'lmstudio',
+  lmStudioBaseUrl: 'http://localhost:1234/v1',
+  ollamaBaseUrl: 'http://localhost:11434',
+  model: '',
+  targetLanguage: 'zh-TW',
+  lastFolder: null,
+  imageFolders: [],
+  promptPresets: [],
+  activePromptPresetId: '',
+  sidebarWidth: 260,
+  rightPaneWidth: 380,
+  listViewMode: 'list',
+  thumbnailWidth: 120,
+  activeView: 'prompt',
+  uiGpuMode: 'auto',
+  disableUiGpu: false,
+  pythonPath: '',
+  downloadFolder: '',
+  promptImagePath: '',
+  promptText: '',
+  sharedComfy: { ...DEFAULT_SHARED_COMFY },
+  i2vDraft: { ...DEFAULT_I2V_DRAFT },
+  flf2vDraft: { ...DEFAULT_FLF2V_DRAFT },
+  loopDraft: { ...DEFAULT_LOOP_DRAFT },
+  windowWidth: DEFAULT_WINDOW.width,
+  windowHeight: DEFAULT_WINDOW.height,
+  windowX: null,
+  windowY: null,
+  windowMaximized: false
+}
+
+function settingsPath(): string {
+  return join(app.getPath('userData'), 'settings.json')
+}
+
+function normalizeUiGpuMode(raw: Record<string, unknown> | null | undefined): UiGpuMode {
+  const mode = raw?.uiGpuMode
+  if (mode === 'auto' || mode === 'onboard' || mode === 'software') return mode
+  if (raw?.disableUiGpu === true) return 'software'
+  return 'auto'
+}
+
+function normalizeActiveView(raw: unknown): ActiveView {
+  if (raw === 'i2v' || raw === 'generate') return 'i2v'
+  if (raw === 'flf2v') return 'flf2v'
+  if (raw === 'loop') return 'loop'
+  return 'prompt'
+}
+
+function normalizeListViewMode(raw: unknown): 'list' | 'thumbs' {
+  return raw === 'thumbs' ? 'thumbs' : 'list'
+}
+
+function numField(v: unknown, fallback: number): number {
+  const n = typeof v === 'number' ? v : Number(v)
+  return Number.isFinite(n) ? n : fallback
+}
+
+function strField(v: unknown, fallback = ''): string {
+  return typeof v === 'string' ? v : fallback
+}
+
+function parentDirOf(filePath: string): string {
+  const raw = (filePath || '').trim()
+  if (!raw) return ''
+  const idx = Math.max(raw.lastIndexOf('/'), raw.lastIndexOf('\\'))
+  if (idx <= 0) return ''
+  return raw.slice(0, idx)
+}
+
+function newExtraLoraId(): string {
+  return `lora-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 6)}`
+}
+
+function normalizeExtraLoras(raw: unknown): ExtraLoraEntry[] {
+  if (!Array.isArray(raw)) return []
+  const out: ExtraLoraEntry[] = []
+  for (const item of raw) {
+    if (!item || typeof item !== 'object') continue
+    const o = item as Record<string, unknown>
+    const path = strField(o.path)
+    const strengthRaw = numField(o.strength, 1)
+    const strength = Math.min(2, Math.max(0, strengthRaw))
+    const id = strField(o.id) || newExtraLoraId()
+    const enabled = typeof o.enabled === 'boolean' ? o.enabled : true
+    out.push({ id, path, strength, enabled })
+  }
+  return out
+}
+
+function normalizeSharedComfy(raw: unknown): SharedComfyDraft {
+  const o = raw && typeof raw === 'object' ? (raw as Record<string, unknown>) : {}
+  const highDitPath = strField(o.highDitPath)
+  const lowDitPath = strField(o.lowDitPath)
+  const ditModelFolder =
+    strField(o.ditModelFolder) || parentDirOf(highDitPath) || parentDirOf(lowDitPath)
+  const speedLoraFolder =
+    strField(o.speedLoraFolder) ||
+    parentDirOf(strField(o.loraHighPath)) ||
+    parentDirOf(strField(o.loraLowPath))
+  return {
+    comfyUiBatPath: strField(o.comfyUiBatPath),
+    ditModelFolder,
+    highDitPath,
+    lowDitPath,
+    speedLoraFolder,
+    wan22LoraFolder: strField(o.wan22LoraFolder),
+    vaePath: strField(o.vaePath),
+    clipPath: strField(o.clipPath),
+    outputFolder: strField(o.outputFolder)
+  }
+}
+
+function normalizeVideoParams(raw: unknown, defaults: VideoGenerateParams): VideoGenerateParams {
+  const o = raw && typeof raw === 'object' ? (raw as Record<string, unknown>) : {}
+  const fps = numField(o.fps, defaults.fps)
+  let seconds = numField(o.seconds, defaults.seconds)
+  if (o.seconds == null && typeof o.length === 'number' && Number.isFinite(o.length) && fps > 0) {
+    seconds = Math.max(0.5, Math.round((o.length - 1) / fps))
+  }
+  return {
+    negative: strField(o.negative, defaults.negative) || defaults.negative,
+    steps: numField(o.steps, defaults.steps),
+    refinerStep: numField(o.refinerStep, defaults.refinerStep),
+    cfg: numField(o.cfg, defaults.cfg),
+    cfgHigh: numField(o.cfgHigh, defaults.cfgHigh),
+    seed: numField(o.seed, defaults.seed),
+    width: numField(o.width, defaults.width),
+    height: numField(o.height, defaults.height),
+    resolutionPreset:
+      typeof o.resolutionPreset === 'string' && o.resolutionPreset.trim()
+        ? o.resolutionPreset
+        : defaults.resolutionPreset,
+    scaleFromImage:
+      typeof o.scaleFromImage === 'boolean' ? o.scaleFromImage : defaults.scaleFromImage,
+    aspectPreset:
+      typeof o.aspectPreset === 'string' && o.aspectPreset.trim()
+        ? o.aspectPreset
+        : defaults.aspectPreset,
+    seconds,
+    fps,
+    shift: numField(o.shift, defaults.shift),
+    sampler: strField(o.sampler, defaults.sampler) || defaults.sampler,
+    scheduler: strField(o.scheduler, defaults.scheduler) || defaults.scheduler,
+    loraHighPath: strField(o.loraHighPath),
+    loraLowPath: strField(o.loraLowPath),
+    loraHighStrength: numField(
+      o.loraHighStrength,
+      numField(o.loraStrength, defaults.loraHighStrength)
+    ),
+    loraLowStrength: numField(
+      o.loraLowStrength,
+      numField(o.loraStrength, defaults.loraLowStrength)
+    ),
+    useLightningLora: Boolean(o.useLightningLora ?? defaults.useLightningLora),
+    extraLorasHigh: (() => {
+      const hasSplit = Array.isArray(o.extraLorasHigh) || Array.isArray(o.extraLorasLow)
+      if (hasSplit) return normalizeExtraLoras(o.extraLorasHigh)
+      return normalizeExtraLoras(o.extraLoras)
+    })(),
+    extraLorasLow: (() => {
+      const hasSplit = Array.isArray(o.extraLorasHigh) || Array.isArray(o.extraLorasLow)
+      if (hasSplit) return normalizeExtraLoras(o.extraLorasLow)
+      return normalizeExtraLoras(o.extraLoras).map((e) => ({
+        ...e,
+        id: newExtraLoraId()
+      }))
+    })(),
+    selectedImagePath: strField(o.selectedImagePath),
+    prompt: strField(o.prompt)
+  }
+}
+
+function normalizeI2vDraft(raw: unknown): I2vGenerateDraft {
+  return normalizeVideoParams(raw, DEFAULT_I2V_DRAFT)
+}
+
+function normalizeFlf2vDraft(raw: unknown): Flf2vGenerateDraft {
+  const o = raw && typeof raw === 'object' ? (raw as Record<string, unknown>) : {}
+  return {
+    ...normalizeVideoParams(raw, DEFAULT_FLF2V_DRAFT),
+    endImagePath: strField(o.endImagePath),
+    flfMode: o.flfMode === 'wanfun_inpaint' ? 'wanfun_inpaint' : 'flf2v'
+  }
+}
+
+function normalizeLoopDraft(raw: unknown): LoopGenerateDraft {
+  return normalizeFlf2vDraft(raw ?? DEFAULT_LOOP_DRAFT)
+}
+
+/** Migrate legacy generateDraft into sharedComfy + i2vDraft + flf2vDraft + loopDraft. */
+function migrateGenerateSettings(parsed: Record<string, unknown>): {
+  sharedComfy: SharedComfyDraft
+  i2vDraft: I2vGenerateDraft
+  flf2vDraft: Flf2vGenerateDraft
+  loopDraft: LoopGenerateDraft
+} {
+  const legacy = parsed.generateDraft
+  const hasNew =
+    parsed.sharedComfy != null ||
+    parsed.i2vDraft != null ||
+    parsed.flf2vDraft != null ||
+    parsed.loopDraft != null
+
+  if (hasNew) {
+    const fromLegacy =
+      legacy && typeof legacy === 'object' ? normalizeSharedComfy(legacy) : { ...DEFAULT_SHARED_COMFY }
+    const shared = { ...fromLegacy, ...normalizeSharedComfy(parsed.sharedComfy) }
+    const sc =
+      parsed.sharedComfy && typeof parsed.sharedComfy === 'object'
+        ? (parsed.sharedComfy as Record<string, unknown>)
+        : null
+    if (sc) {
+      for (const key of Object.keys(DEFAULT_SHARED_COMFY) as (keyof SharedComfyDraft)[]) {
+        if (typeof sc[key] === 'string' && (sc[key] as string).length > 0) {
+          shared[key] = sc[key] as string
+        }
+      }
+    }
+    const i2vDraft = normalizeI2vDraft(parsed.i2vDraft ?? legacy)
+    if (!shared.speedLoraFolder.trim()) {
+      shared.speedLoraFolder =
+        parentDirOf(i2vDraft.loraHighPath) || parentDirOf(i2vDraft.loraLowPath)
+    }
+    return {
+      sharedComfy: shared,
+      i2vDraft,
+      flf2vDraft: normalizeFlf2vDraft(parsed.flf2vDraft ?? legacy),
+      loopDraft: normalizeLoopDraft(parsed.loopDraft ?? parsed.flf2vDraft ?? legacy)
+    }
+  }
+
+  if (legacy && typeof legacy === 'object') {
+    return {
+      sharedComfy: normalizeSharedComfy(legacy),
+      i2vDraft: normalizeI2vDraft(legacy),
+      flf2vDraft: normalizeFlf2vDraft(legacy),
+      loopDraft: normalizeLoopDraft(legacy)
+    }
+  }
+
+  return {
+    sharedComfy: { ...DEFAULT_SHARED_COMFY },
+    i2vDraft: { ...DEFAULT_I2V_DRAFT },
+    flf2vDraft: { ...DEFAULT_FLF2V_DRAFT },
+    loopDraft: { ...DEFAULT_LOOP_DRAFT }
+  }
+}
+
+/** Must run before app.whenReady(); Chromium GPU flags cannot change after that. */
+function readUiGpuModeSync(): UiGpuMode {
+  try {
+    const raw = readFileSync(settingsPath(), 'utf-8')
+    return normalizeUiGpuMode(JSON.parse(raw) as Record<string, unknown>)
+  } catch {
+    return 'auto'
+  }
+}
+
+const earlyUiGpuMode = readUiGpuModeSync()
+if (earlyUiGpuMode === 'software') {
+  app.disableHardwareAcceleration()
+  app.commandLine.appendSwitch('disable-gpu')
+} else if (earlyUiGpuMode === 'onboard') {
+  app.commandLine.appendSwitch('force_low_power_gpu')
+}
+
+async function loadSettings(): Promise<AppSettings> {
+  try {
+    const raw = await readFile(settingsPath(), 'utf-8')
+    const parsed = JSON.parse(raw) as Record<string, unknown>
+    const uiGpuMode = normalizeUiGpuMode(parsed)
+    const migrated = migrateGenerateSettings(parsed)
+    return {
+      ...DEFAULT_SETTINGS,
+      ...(parsed as Partial<AppSettings>),
+      imageFolders: Array.isArray(parsed.imageFolders)
+        ? (parsed.imageFolders as string[])
+        : DEFAULT_SETTINGS.imageFolders,
+      promptPresets: Array.isArray(parsed.promptPresets)
+        ? (parsed.promptPresets as PromptPreset[])
+        : DEFAULT_SETTINGS.promptPresets,
+      activePromptPresetId:
+        typeof parsed.activePromptPresetId === 'string'
+          ? parsed.activePromptPresetId
+          : DEFAULT_SETTINGS.activePromptPresetId,
+      listViewMode: normalizeListViewMode(parsed.listViewMode),
+      thumbnailWidth:
+        typeof parsed.thumbnailWidth === 'number' && Number.isFinite(parsed.thumbnailWidth)
+          ? parsed.thumbnailWidth
+          : DEFAULT_SETTINGS.thumbnailWidth,
+      activeView: normalizeActiveView(parsed.activeView),
+      uiGpuMode,
+      disableUiGpu: uiGpuMode === 'software',
+      pythonPath: typeof parsed.pythonPath === 'string' ? parsed.pythonPath : '',
+      downloadFolder: typeof parsed.downloadFolder === 'string' ? parsed.downloadFolder : '',
+      promptImagePath: typeof parsed.promptImagePath === 'string' ? parsed.promptImagePath : '',
+      promptText: typeof parsed.promptText === 'string' ? parsed.promptText : '',
+      sharedComfy: migrated.sharedComfy,
+      i2vDraft: migrated.i2vDraft,
+      flf2vDraft: migrated.flf2vDraft,
+      loopDraft: migrated.loopDraft
+    }
+  } catch {
+    return {
+      ...DEFAULT_SETTINGS,
+      sharedComfy: { ...DEFAULT_SHARED_COMFY },
+      i2vDraft: { ...DEFAULT_I2V_DRAFT },
+      flf2vDraft: { ...DEFAULT_FLF2V_DRAFT },
+      loopDraft: { ...DEFAULT_LOOP_DRAFT }
+    }
+  }
+}
+
+async function saveSettings(settings: AppSettings): Promise<void> {
+  await writeFile(settingsPath(), JSON.stringify(settings, null, 2), 'utf-8')
+}
+
+function getWindowState(settings: AppSettings): WindowState {
+  return {
+    width: settings.windowWidth || DEFAULT_WINDOW.width,
+    height: settings.windowHeight || DEFAULT_WINDOW.height,
+    x: settings.windowX ?? null,
+    y: settings.windowY ?? null,
+    isMaximized: Boolean(settings.windowMaximized)
+  }
+}
+
+function isVisibleOnAnyDisplay(bounds: {
+  x: number
+  y: number
+  width: number
+  height: number
+}): boolean {
+  const displays = screen.getAllDisplays()
+  return displays.some((d) => {
+    const a = d.workArea
+    const overlapX = Math.max(
+      0,
+      Math.min(bounds.x + bounds.width, a.x + a.width) - Math.max(bounds.x, a.x)
+    )
+    const overlapY = Math.max(
+      0,
+      Math.min(bounds.y + bounds.height, a.y + a.height) - Math.max(bounds.y, a.y)
+    )
+    return overlapX >= 80 && overlapY >= 80
+  })
+}
+
+async function persistWindowState(win: BrowserWindow): Promise<void> {
+  const isMaximized = win.isMaximized()
+  const bounds = isMaximized ? win.getNormalBounds() : win.getBounds()
+  const current = await loadSettings()
+  await saveSettings({
+    ...current,
+    windowWidth: bounds.width,
+    windowHeight: bounds.height,
+    windowX: bounds.x,
+    windowY: bounds.y,
+    windowMaximized: isMaximized
+  })
+}
+
+function captionPathForImage(imagePath: string): string {
+  const dir = dirname(imagePath)
+  const stem = basename(imagePath, extname(imagePath))
+  return join(dir, `${stem}.txt`)
+}
+
+function mimeForExt(ext: string): string {
+  switch (ext.toLowerCase()) {
+    case '.jpg':
+    case '.jpeg':
+      return 'image/jpeg'
+    case '.png':
+      return 'image/png'
+    case '.webp':
+      return 'image/webp'
+    case '.gif':
+      return 'image/gif'
+    case '.bmp':
+      return 'image/bmp'
+    case '.mp4':
+      return 'video/mp4'
+    case '.webm':
+      return 'video/webm'
+    case '.mov':
+      return 'video/quicktime'
+    default:
+      return 'application/octet-stream'
+  }
+}
+
+async function listCudaDevices(): Promise<GpuDevice[]> {
+  try {
+    const { stdout } = await execFileAsync(
+      'nvidia-smi',
+      ['--query-gpu=index,name', '--format=csv,noheader,nounits'],
+      { timeout: 5000, windowsHide: true, encoding: 'utf8' }
+    )
+    const devices: GpuDevice[] = []
+    for (const line of stdout.split(/\r?\n/)) {
+      const trimmed = line.trim()
+      if (!trimmed) continue
+      const comma = trimmed.indexOf(',')
+      if (comma < 0) continue
+      const indexStr = trimmed.slice(0, comma).trim()
+      const name = trimmed.slice(comma + 1).trim()
+      const index = Number(indexStr)
+      if (!Number.isInteger(index) || index < 0) continue
+      const id = `cuda:${index}`
+      devices.push({
+        id,
+        label: name ? `${id} — ${name}` : id
+      })
+    }
+    return devices.length > 0 ? devices : FALLBACK_GPU
+  } catch {
+    return FALLBACK_GPU
+  }
+}
+
+let mainWindow: BrowserWindow | null = null
+let saveWindowTimer: ReturnType<typeof setTimeout> | null = null
+
+function scheduleSaveWindowState(win: BrowserWindow): void {
+  if (saveWindowTimer) clearTimeout(saveWindowTimer)
+  saveWindowTimer = setTimeout(() => {
+    saveWindowTimer = null
+    void persistWindowState(win)
+  }, 400)
+}
+
+async function createWindow(): Promise<void> {
+  const settings = await loadSettings()
+  const saved = getWindowState(settings)
+
+  const options: Electron.BrowserWindowConstructorOptions = {
+    width: Math.max(900, saved.width),
+    height: Math.max(600, saved.height),
+    minWidth: 900,
+    minHeight: 600,
+    title: `${app.getName()} Ver${app.getVersion()}`,
+    show: false,
+    autoHideMenuBar: true,
+    ...(!app.isPackaged ? { icon: join(__dirname, '../../build/icon.ico') } : {}),
+    webPreferences: {
+      preload: join(__dirname, '../preload/index.js'),
+      contextIsolation: true,
+      nodeIntegration: false,
+      sandbox: false
+    }
+  }
+
+  if (
+    saved.x !== null &&
+    saved.y !== null &&
+    isVisibleOnAnyDisplay({
+      x: saved.x,
+      y: saved.y,
+      width: options.width!,
+      height: options.height!
+    })
+  ) {
+    options.x = saved.x
+    options.y = saved.y
+  }
+
+  mainWindow = new BrowserWindow(options)
+  mainWindow.setMenuBarVisibility(false)
+  Menu.setApplicationMenu(null)
+  mainWindow.on('page-title-updated', (event) => {
+    event.preventDefault()
+  })
+
+  mainWindow.once('ready-to-show', () => {
+    if (!mainWindow) return
+    if (saved.isMaximized) mainWindow.maximize()
+    mainWindow.show()
+  })
+
+  mainWindow.on('resize', () => {
+    if (mainWindow && !mainWindow.isMinimized()) scheduleSaveWindowState(mainWindow)
+  })
+  mainWindow.on('move', () => {
+    if (mainWindow && !mainWindow.isMinimized()) scheduleSaveWindowState(mainWindow)
+  })
+  mainWindow.on('maximize', () => {
+    if (mainWindow) scheduleSaveWindowState(mainWindow)
+  })
+  mainWindow.on('unmaximize', () => {
+    if (mainWindow) scheduleSaveWindowState(mainWindow)
+  })
+  mainWindow.on('close', () => {
+    if (saveWindowTimer) {
+      clearTimeout(saveWindowTimer)
+      saveWindowTimer = null
+    }
+    if (!mainWindow) return
+    const win = mainWindow
+    const isMaximized = win.isMaximized()
+    const bounds = isMaximized ? win.getNormalBounds() : win.getBounds()
+    try {
+      let current: AppSettings = {
+        ...DEFAULT_SETTINGS,
+        sharedComfy: { ...DEFAULT_SHARED_COMFY },
+        i2vDraft: { ...DEFAULT_I2V_DRAFT },
+        flf2vDraft: { ...DEFAULT_FLF2V_DRAFT },
+        loopDraft: { ...DEFAULT_LOOP_DRAFT }
+      }
+      try {
+        const parsed = JSON.parse(readFileSync(settingsPath(), 'utf-8')) as Record<string, unknown>
+        const migrated = migrateGenerateSettings(parsed)
+        current = {
+          ...DEFAULT_SETTINGS,
+          ...(parsed as Partial<AppSettings>),
+          sharedComfy: migrated.sharedComfy,
+          i2vDraft: migrated.i2vDraft,
+          flf2vDraft: migrated.flf2vDraft,
+          loopDraft: migrated.loopDraft
+        }
+      } catch {
+        // use defaults
+      }
+      writeFileSync(
+        settingsPath(),
+        JSON.stringify(
+          {
+            ...current,
+            windowWidth: bounds.width,
+            windowHeight: bounds.height,
+            windowX: bounds.x,
+            windowY: bounds.y,
+            windowMaximized: isMaximized
+          },
+          null,
+          2
+        ),
+        'utf-8'
+      )
+    } catch {
+      // Best-effort; resize handlers already debounce-save
+    }
+  })
+
+  if (process.env.ELECTRON_RENDERER_URL) {
+    mainWindow.loadURL(process.env.ELECTRON_RENDERER_URL)
+  } else {
+    mainWindow.loadFile(join(__dirname, '../renderer/index.html'))
+  }
+}
+
+protocol.registerSchemesAsPrivileged([
+  {
+    scheme: 'local-file',
+    privileges: {
+      standard: true,
+      secure: true,
+      supportFetchAPI: true,
+      bypassCSP: true,
+      stream: true
+    }
+  }
+])
+
+app.whenReady().then(async () => {
+  protocol.handle('local-file', async (request) => {
+    const parsed = new URL(request.url)
+    let filePath = decodeURIComponent(parsed.pathname)
+    if (filePath.startsWith('/')) filePath = filePath.slice(1)
+    try {
+      const buf = await readFile(filePath)
+      const mime = mimeForExt(extname(filePath))
+      return new Response(buf, {
+        headers: {
+          'Content-Type': mime,
+          'Cache-Control': 'no-store'
+        }
+      })
+    } catch {
+      return new Response('Not Found', { status: 404 })
+    }
+  })
+
+  ipcMain.handle('dialog:openFolder', async () => {
+    const result = await dialog.showOpenDialog(mainWindow!, {
+      properties: ['openDirectory']
+    })
+    if (result.canceled || result.filePaths.length === 0) return null
+    return result.filePaths[0]
+  })
+
+  ipcMain.handle(
+    'dialog:openFile',
+    async (
+      _event,
+      opts?: {
+        title?: string
+        filters?: { name: string; extensions: string[] }[]
+      }
+    ) => {
+      const result = await dialog.showOpenDialog(mainWindow!, {
+        title: opts?.title,
+        properties: ['openFile'],
+        filters: opts?.filters ?? [{ name: 'All Files', extensions: ['*'] }]
+      })
+      if (result.canceled || result.filePaths.length === 0) return null
+      return result.filePaths[0]
+    }
+  )
+
+  ipcMain.handle('shell:openPath', async (_event, targetPath: string) => {
+    const raw = typeof targetPath === 'string' ? targetPath.trim() : ''
+    if (!raw) return { ok: false, error: 'Path is empty' }
+    const resolved = isAbsolute(raw) ? raw : resolvePath(raw)
+    try {
+      await mkdir(resolved, { recursive: true })
+    } catch {
+      // May already exist as a file, or permissions failed — let openPath report.
+    }
+    const error = await shell.openPath(resolved)
+    if (error) return { ok: false, error }
+    return { ok: true, path: resolved }
+  })
+
+  ipcMain.handle('shell:showItemInFolder', async (_event, fullPath: string) => {
+    const raw = typeof fullPath === 'string' ? fullPath.trim() : ''
+    if (!raw) return { ok: false, error: 'Path is empty' }
+    shell.showItemInFolder(raw)
+    return { ok: true }
+  })
+
+  ipcMain.handle('fs:listImages', async (_event, dir: string) => {
+    const entries = await readdir(dir, { withFileTypes: true })
+    const captionStems = new Set<string>()
+    const imageEntries: { name: string; path: string }[] = []
+
+    for (const entry of entries) {
+      if (!entry.isFile()) continue
+      const ext = extname(entry.name).toLowerCase()
+      if (ext === '.txt') {
+        captionStems.add(basename(entry.name, extname(entry.name)).toLowerCase())
+        continue
+      }
+      if (!IMAGE_EXTS.has(ext)) continue
+      imageEntries.push({ name: entry.name, path: join(dir, entry.name) })
+    }
+
+    const images = imageEntries.map(({ name, path: imagePath }) => {
+      const stem = basename(name, extname(name)).toLowerCase()
+      return { path: imagePath, name, hasCaption: captionStems.has(stem) }
+    })
+
+    images.sort((a, b) => a.name.localeCompare(b.name, undefined, { numeric: true }))
+    return images
+  })
+
+  ipcMain.handle('fs:readCaption', async (_event, imagePath: string) => {
+    const txtPath = captionPathForImage(imagePath)
+    try {
+      return await readFile(txtPath, 'utf-8')
+    } catch {
+      return ''
+    }
+  })
+
+  ipcMain.handle('fs:writeCaption', async (_event, imagePath: string, text: string) => {
+    const txtPath = captionPathForImage(imagePath)
+    await writeFile(txtPath, text, 'utf-8')
+    return true
+  })
+
+  ipcMain.handle('fs:readImageBase64', async (_event, imagePath: string) => {
+    const buf = await readFile(imagePath)
+    return {
+      mimeType: mimeForExt(extname(imagePath)),
+      base64: buf.toString('base64')
+    }
+  })
+
+  ipcMain.handle('fs:pathExists', async (_event, targetPath: string) => {
+    const raw = typeof targetPath === 'string' ? targetPath.trim() : ''
+    if (!raw) return false
+    try {
+      await access(raw, constants.F_OK)
+      return true
+    } catch {
+      return false
+    }
+  })
+
+  ipcMain.handle('fs:listModelFiles', async (_event, folder: string) => {
+    const dir = (folder || '').trim()
+    if (!dir) return [] as { name: string; path: string }[]
+    try {
+      await access(dir, constants.R_OK)
+    } catch {
+      return []
+    }
+    try {
+      const entries = await readdir(dir, { withFileTypes: true })
+      const files: { name: string; path: string }[] = []
+      for (const ent of entries) {
+        if (!ent.isFile()) continue
+        const ext = extname(ent.name).toLowerCase()
+        if (!MODEL_EXTS.has(ext)) continue
+        files.push({ name: ent.name, path: join(dir, ent.name) })
+      }
+      files.sort((a, b) => a.name.localeCompare(b.name, undefined, { sensitivity: 'base' }))
+      return files
+    } catch {
+      return []
+    }
+  })
+
+  ipcMain.handle('settings:get', async () => loadSettings())
+
+  ipcMain.handle('settings:set', async (_event, settings: Partial<AppSettings>) => {
+    const current = await loadSettings()
+    const merged = { ...current, ...settings }
+    const uiGpuMode = normalizeUiGpuMode(merged as unknown as Record<string, unknown>)
+    const migrated = migrateGenerateSettings(merged as unknown as Record<string, unknown>)
+    await saveSettings({
+      ...merged,
+      listViewMode: normalizeListViewMode(merged.listViewMode),
+      activeView: normalizeActiveView(merged.activeView),
+      sharedComfy: {
+        ...migrated.sharedComfy,
+        ...(settings.sharedComfy || {})
+      },
+      i2vDraft: {
+        ...migrated.i2vDraft,
+        ...(settings.i2vDraft || {})
+      },
+      flf2vDraft: {
+        ...migrated.flf2vDraft,
+        ...(settings.flf2vDraft || {})
+      },
+      loopDraft: {
+        ...migrated.loopDraft,
+        ...(settings.loopDraft || {})
+      },
+      uiGpuMode,
+      disableUiGpu: uiGpuMode === 'software',
+      // Window geometry is owned by main; never let renderer wipe it
+      windowWidth: current.windowWidth,
+      windowHeight: current.windowHeight,
+      windowX: current.windowX,
+      windowY: current.windowY,
+      windowMaximized: current.windowMaximized
+    })
+    return true
+  })
+
+  ipcMain.handle('system:getResourceStats', async (_event, deviceId?: string) =>
+    getResourceStats(deviceId)
+  )
+
+  ipcMain.handle('system:killProcess', async (_event, pid: number) => killProcessByPid(pid))
+
+  ipcMain.handle('gpu:listDevices', async () => listCudaDevices())
+
+  ipcMain.handle('download:defaultFolder', async () => app.getPath('userData'))
+
+  ipcMain.handle('python:probe', async (_event, pythonPath?: string) => probePython(pythonPath))
+
+  ipcMain.handle('python:cancelInstall', async () => cancelPythonInstall())
+
+  ipcMain.handle('python:install', async (_event, opts?: { installPath?: string }) => {
+    if (pythonInstallRunning()) {
+      return { ok: false, message: 'Python install already running' }
+    }
+    return installPythonEnv({
+      installPath: opts?.installPath,
+      onProgress: (p) => {
+        mainWindow?.webContents.send('python:installProgress', p)
+      }
+    })
+  })
+
+  ipcMain.handle('comfy:probeBat', async (_event, batPath?: string) =>
+    probeComfyBat(batPath || '')
+  )
+
+  ipcMain.handle('comfy:cancelInstall', async () => cancelComfyInstall())
+
+  ipcMain.handle(
+    'comfy:install',
+    async (_event, opts?: { downloadFolder?: string; pythonPath?: string }) => {
+      return installComfyUi({
+        downloadFolder: opts?.downloadFolder,
+        pythonPath: opts?.pythonPath,
+        onProgress: (p) => {
+          mainWindow?.webContents.send('comfy:installProgress', p)
+        }
+      })
+    }
+  )
+
+  ipcMain.handle(
+    'comfy:start',
+    async (
+      _event,
+      opts: {
+        batPath: string
+        pythonPath?: string
+        modelsRoot?: string
+        loraFolders?: string[]
+        ditFolders?: string[]
+        vaeFolders?: string[]
+        clipFolders?: string[]
+      }
+    ) => startComfyUi(opts)
+  )
+
+  ipcMain.handle('comfy:stop', async () => stopComfyUi())
+
+  setComfyLogListener((payload) => {
+    mainWindow?.webContents.send('comfy:log', payload)
+  })
+
+  ipcMain.handle('comfy:status', async () => {
+    const proc = comfyStatus()
+    const online = await isComfyServerOnline()
+    return { ...proc, online, outputDir: proc.outputDir || getComfyOutputDir() }
+  })
+
+  ipcMain.handle(
+    'comfy:httpRequest',
+    async (
+      _event,
+      opts: {
+        url: string
+        method?: string
+        headers?: Record<string, string>
+        body?: string
+        timeoutMs?: number
+      }
+    ) => {
+      try {
+        const method = (opts.method || 'GET').toUpperCase()
+        const timeoutMs = opts.timeoutMs ?? 120_000
+        const res = await fetch(opts.url, {
+          method,
+          headers: opts.headers,
+          body: method === 'GET' || method === 'HEAD' ? undefined : opts.body,
+          signal: AbortSignal.timeout(timeoutMs)
+        })
+        const text = await res.text()
+        return { ok: res.ok, status: res.status, text }
+      } catch (err) {
+        return {
+          ok: false,
+          status: 0,
+          text: '',
+          error: err instanceof Error ? err.message : String(err)
+        }
+      }
+    }
+  )
+
+  ipcMain.handle(
+    'comfy:progressConnect',
+    async (
+      event,
+      opts: { baseUrl?: string; clientId: string }
+    ): Promise<{ ok: boolean; error?: string }> => {
+      const clientId = (opts?.clientId || '').trim()
+      if (!clientId) return { ok: false, error: 'clientId is required' }
+      const sender = event.sender
+      return connectComfyProgressWs({
+        baseUrl: opts?.baseUrl || 'http://127.0.0.1:8188',
+        clientId,
+        onEvent: (payload) => {
+          if (!sender.isDestroyed()) {
+            sender.send('comfy:progress', payload)
+          }
+        }
+      })
+    }
+  )
+
+  ipcMain.handle('comfy:progressDisconnect', async () => {
+    disconnectComfyProgressWs()
+    return { ok: true }
+  })
+
+  ipcMain.handle(
+    'comfy:resolveImagePath',
+    async (
+      _event,
+      img: { filename: string; subfolder?: string; type?: string }
+    ): Promise<{ ok: boolean; path?: string; error?: string }> => {
+      try {
+        const abs = resolveComfyImagePath(img)
+        if (!existsSync(abs)) {
+          return { ok: false, error: `Image not found: ${abs}` }
+        }
+        return { ok: true, path: abs }
+      } catch (err) {
+        return { ok: false, error: err instanceof Error ? err.message : String(err) }
+      }
+    }
+  )
+
+  ipcMain.handle('comfy:getOutputDir', async () => ({
+    ok: true,
+    path: getComfyOutputDir()
+  }))
+
+  ipcMain.handle(
+    'comfy:uploadImage',
+    async (
+      _event,
+      opts: { imagePath: string; baseUrl?: string }
+    ): Promise<{ name: string; subfolder: string; type: string }> => {
+      const imagePath = (opts?.imagePath || '').trim()
+      if (!imagePath) throw new Error('imagePath is empty')
+      if (!existsSync(imagePath)) {
+        throw new Error(`Image not found: ${imagePath}`)
+      }
+      const baseUrl = ((opts?.baseUrl || 'http://127.0.0.1:8188').trim() || 'http://127.0.0.1:8188').replace(
+        /\/$/,
+        ''
+      )
+      const buf = await readFile(imagePath)
+      const fileName = basename(imagePath)
+      const mime = mimeForExt(extname(imagePath))
+      const bytes = new Uint8Array(buf)
+      const blob = new Blob([bytes], { type: mime })
+      const form = new FormData()
+      form.append('image', blob, fileName)
+
+      const res = await fetch(`${baseUrl}/upload/image`, {
+        method: 'POST',
+        body: form,
+        signal: AbortSignal.timeout(120_000)
+      })
+      const text = await res.text()
+      if (!res.ok) {
+        throw new Error(`Upload failed HTTP ${res.status}: ${text.slice(0, 400)}`)
+      }
+      let parsed: { name?: string; subfolder?: string; type?: string }
+      try {
+        parsed = JSON.parse(text) as { name?: string; subfolder?: string; type?: string }
+      } catch {
+        throw new Error(`Invalid upload response: ${text.slice(0, 400)}`)
+      }
+      return {
+        name: parsed.name || fileName,
+        subfolder: parsed.subfolder || '',
+        type: parsed.type || 'input'
+      }
+    }
+  )
+
+  ipcMain.handle(
+    'gallery:saveVideo',
+    async (
+      _event,
+      opts: { sourcePath: string; outputFolder: string; fileName?: string }
+    ): Promise<{ ok: boolean; path?: string; dir?: string; error?: string }> => {
+      const sourcePath = (opts?.sourcePath || '').trim()
+      const outputFolder = (opts?.outputFolder || '').trim()
+      if (!sourcePath) return { ok: false, error: 'Source path is empty' }
+      if (!outputFolder) return { ok: false, error: 'Output folder is empty' }
+      if (!existsSync(sourcePath)) {
+        return { ok: false, error: `Source not found: ${sourcePath}` }
+      }
+      try {
+        await mkdir(outputFolder, { recursive: true })
+        const ext = extname(sourcePath) || '.mp4'
+        const stamp = new Date()
+          .toISOString()
+          .replace(/[-:]/g, '')
+          .replace(/\.\d+Z$/, 'Z')
+          .replace('T', '_')
+        const safeBase =
+          (opts?.fileName || '').trim().replace(/[<>:"/\\|?*\x00-\x1f]+/g, '_') ||
+          `i2v_${stamp}`
+        const baseName = safeBase.toLowerCase().endsWith(ext.toLowerCase())
+          ? safeBase
+          : `${safeBase}${ext}`
+        let dest = join(outputFolder, baseName)
+        if (existsSync(dest)) {
+          const stem = baseName.slice(0, -ext.length)
+          dest = join(outputFolder, `${stem}_${Date.now()}${ext}`)
+        }
+        try {
+          await copyFile(sourcePath, dest)
+        } catch {
+          copyFileSync(sourcePath, dest)
+        }
+        return { ok: true, path: dest, dir: outputFolder }
+      } catch (err) {
+        return { ok: false, error: err instanceof Error ? err.message : String(err) }
+      }
+    }
+  )
+
+  ipcMain.handle(
+    'gallery:listVideos',
+    async (
+      _event,
+      opts: { outputFolder: string }
+    ): Promise<{
+      ok: boolean
+      error?: string
+      videos: { path: string; name: string; mtimeMs: number }[]
+    }> => {
+      const dir = (opts?.outputFolder || '').trim()
+      if (!dir) {
+        return { ok: false, error: 'Output folder is empty', videos: [] }
+      }
+      try {
+        await access(dir, constants.R_OK)
+      } catch {
+        return { ok: true, videos: [] }
+      }
+      try {
+        const entries = await readdir(dir, { withFileTypes: true })
+        const videos: { path: string; name: string; mtimeMs: number }[] = []
+        for (const ent of entries) {
+          if (!ent.isFile()) continue
+          const ext = extname(ent.name).toLowerCase()
+          if (!VIDEO_EXTS.has(ext)) continue
+          const full = join(dir, ent.name)
+          let mtimeMs = 0
+          try {
+            mtimeMs = (await stat(full)).mtimeMs
+          } catch {
+            mtimeMs = 0
+          }
+          videos.push({ path: full, name: ent.name, mtimeMs })
+        }
+        videos.sort((a, b) => b.mtimeMs - a.mtimeMs || a.name.localeCompare(b.name))
+        return { ok: true, videos }
+      } catch (err) {
+        return {
+          ok: false,
+          error: err instanceof Error ? err.message : String(err),
+          videos: []
+        }
+      }
+    }
+  )
+
+  await createWindow()
+
+  app.on('activate', () => {
+    if (BrowserWindow.getAllWindows().length === 0) void createWindow()
+  })
+})
+
+app.on('window-all-closed', () => {
+  if (process.platform !== 'darwin') app.quit()
+})
+
+app.on('before-quit', () => {
+  void stopComfyUi()
+})

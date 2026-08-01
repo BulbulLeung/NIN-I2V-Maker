@@ -1,0 +1,12 @@
+node_modules/
+release/
+dist/
+out/
+
+# Keep app icon tracked
+build/*
+!build/icon.ico
+
+*.exe
+.DS_Store
+*.log
