@@ -1,6 +1,6 @@
 import { basename, extname } from 'path'
 import { open, stat } from 'fs/promises'
-import { resolveVideoSeed } from './videoGalleryMeta'
+import { parseSeedFromVideoName } from './videoGalleryMeta'
 
 export interface VideoProbeInfo {
   path: string
@@ -349,7 +349,7 @@ export async function probeVideoFile(filePath: string): Promise<VideoProbeInfo> 
   }
 
   try {
-    info.seed = await resolveVideoSeed(filePath)
+    info.seed = parseSeedFromVideoName(filePath)
   } catch {
     info.seed = null
   }

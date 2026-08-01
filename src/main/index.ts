@@ -26,7 +26,6 @@ import {
 } from './pythonEnv'
 import { getResourceStats, killProcessByPid } from './resourceStats'
 import { probeVideoFile, type VideoProbeInfo } from './videoProbe'
-import { writeVideoGalleryMeta } from './videoGalleryMeta'
 import { readImagePositivePrompt } from './imagePromptMeta'
 
 const execFileAsync = promisify(execFile)
@@ -36,7 +35,7 @@ const MODEL_EXTS = new Set(['.safetensors', '.ckpt', '.pt'])
 const VIDEO_EXTS = new Set(['.mp4', '.webm', '.mov'])
 
 const WAN_DEFAULT_NEGATIVE =
-  '色调艳丽，过曝，静态，细节模糊不清，字幕，风格，作品，画作，画面，静止，整体发灰，最差质量，低质量，JPEG压缩残留，丑陋的，残缺的，多余的手指，画得不好的手部，画得不好的脸部，畸形的，毁容的，形态畸形的肢体，手指融合，静止不动的画面，杂乱的背景，三条腿，背景人很多，倒着走'
+  'vivid colors, overexposed, static, blurry details, subtitles, stylized, artwork, painting, still image, overall grayish, worst quality, low quality, JPEG compression artifacts, ugly, incomplete, extra fingers, poorly drawn hands, poorly drawn face, deformed, disfigured, deformed limbs, fused fingers, still frame, cluttered background, three legs, crowded background, walking backwards'
 
 // Avoid Chromium HTTP disk-cache corruption when loading many local-file:// thumbnails.
 app.commandLine.appendSwitch('disable-http-cache')
@@ -975,6 +974,18 @@ app.whenReady().then(async () => {
     return { ok: true }
   })
 
+  ipcMain.handle('shell:trashItem', async (_event, fullPath: string) => {
+    const raw = typeof fullPath === 'string' ? fullPath.trim() : ''
+    if (!raw) return { ok: false, error: 'Path is empty' }
+    if (!existsSync(raw)) return { ok: false, error: 'File not found' }
+    try {
+      await shell.trashItem(raw)
+      return { ok: true }
+    } catch (err) {
+      return { ok: false, error: err instanceof Error ? err.message : String(err) }
+    }
+  })
+
   ipcMain.handle('fs:listImages', async (_event, dir: string) => {
     const entries = await readdir(dir, { withFileTypes: true })
     const captionStems = new Set<string>()
@@ -1359,13 +1370,6 @@ app.whenReady().then(async () => {
           await copyFile(sourcePath, dest)
         } catch {
           copyFileSync(sourcePath, dest)
-        }
-        if (seedNum != null) {
-          try {
-            await writeVideoGalleryMeta(dest, { seed: seedNum })
-          } catch {
-            /* file still saved; seed recoverable from filename */
-          }
         }
         return { ok: true, path: dest, dir: outputFolder }
       } catch (err) {

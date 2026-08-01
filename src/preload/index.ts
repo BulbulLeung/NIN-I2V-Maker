@@ -152,6 +152,9 @@ const api = {
   showItemInFolder: (fullPath: string): Promise<{ ok: boolean; error?: string }> =>
     ipcRenderer.invoke('shell:showItemInFolder', fullPath),
 
+  trashItem: (fullPath: string): Promise<{ ok: boolean; error?: string }> =>
+    ipcRenderer.invoke('shell:trashItem', fullPath),
+
   listImages: (dir: string): Promise<ImageItem[]> => ipcRenderer.invoke('fs:listImages', dir),
 
   readCaption: (imagePath: string): Promise<string> =>

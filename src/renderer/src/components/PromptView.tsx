@@ -10,13 +10,24 @@ import {
 import type { AppSettings, ImageItem } from '../types'
 import { LANGUAGES } from '../types'
 import { generateI2vPromptForImage } from '../services/promptGen'
-import { useArrowListNav } from '../hooks/useArrowListNav'
+import { isTextEntryTarget, useArrowListNav } from '../hooks/useArrowListNav'
 import { useBidirectionalTranslate } from '../hooks/useBidirectionalTranslate'
 import {
   parseSidecarCaption,
   serializeSidecarCaption,
   sidecarHasContent
 } from '../utils/sidecarCaption'
+import { basenamePath, parentDir } from '../services/comfyI2v'
+import { ConfirmDialog } from './ConfirmDialog'
+
+function captionSidecarPath(imagePath: string): string {
+  const dir = parentDir(imagePath)
+  const name = basenamePath(imagePath)
+  const dot = name.lastIndexOf('.')
+  const stem = dot > 0 ? name.slice(0, dot) : name
+  const sep = imagePath.includes('\\') ? '\\' : '/'
+  return dir ? `${dir}${sep}${stem}.txt` : `${stem}.txt`
+}
 
 interface Props {
   settings: AppSettings
@@ -50,12 +61,17 @@ export function PromptView({
   const [dirty, setDirty] = useState(false)
   const [loadingList, setLoadingList] = useState(false)
   const [generating, setGenerating] = useState(false)
+  const [confirmDelete, setConfirmDelete] = useState(false)
 
   const abortRef = useRef<AbortController | null>(null)
   const loadToken = useRef(0)
   const dragKind = useRef<'left' | 'right' | null>(null)
   const promptImagePathRef = useRef(settings.promptImagePath)
   promptImagePathRef.current = settings.promptImagePath
+  const selectedPathRef = useRef(selectedPath)
+  selectedPathRef.current = selectedPath
+  const imagesRef = useRef(images)
+  imagesRef.current = images
 
   const folder = settings.lastFolder
   const langLabel =
@@ -155,15 +171,71 @@ export function PromptView({
 
   const imagePaths = useMemo(() => images.map((img) => img.path), [images])
   useArrowListNav({
-    enabled: active && images.length > 0,
+    enabled: active && images.length > 0 && !confirmDelete,
     items: imagePaths,
     selectedId: selectedPath,
     onSelect: selectImage,
     columns: settings.listViewMode === 'thumbs' ? 'auto' : 1,
     containerRef: imageListRef,
     shouldIgnore: () =>
-      Boolean(document.querySelector('.settings-modal, .toolbar-dataset-menu'))
+      Boolean(
+        document.querySelector('.settings-modal, .toolbar-dataset-menu, .confirm-modal')
+      )
   })
+
+  useEffect(() => {
+    if (!active) return
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key !== 'Delete') return
+      if (e.defaultPrevented) return
+      if (e.altKey || e.ctrlKey || e.metaKey) return
+      if (isTextEntryTarget(e.target)) return
+      if (document.querySelector('.settings-modal, .toolbar-dataset-menu, .confirm-modal')) {
+        return
+      }
+      if (!selectedPathRef.current) return
+      e.preventDefault()
+      e.stopPropagation()
+      setConfirmDelete(true)
+    }
+    window.addEventListener('keydown', onKey, true)
+    return () => window.removeEventListener('keydown', onKey, true)
+  }, [active])
+
+  const performDeleteImage = useCallback(async () => {
+    const path = selectedPathRef.current
+    setConfirmDelete(false)
+    if (!path) return
+    const res = await window.api.trashItem(path)
+    if (!res.ok) {
+      onStatus(res.error || 'Failed to move image to Recycle Bin', true)
+      return
+    }
+    const txt = captionSidecarPath(path)
+    try {
+      if (await window.api.pathExists(txt)) {
+        await window.api.trashItem(txt)
+      }
+    } catch {
+      /* image already trashed */
+    }
+    const list = imagesRef.current
+    const idx = list.findIndex((img) => img.path === path)
+    const nextList = list.filter((img) => img.path !== path)
+    setImages(nextList)
+    const nextPath = nextList[idx]?.path ?? nextList[idx - 1]?.path ?? null
+    if (nextPath) {
+      selectImage(nextPath)
+    } else {
+      setSelectedPath(null)
+      onPromptSourceChange('', '')
+      setEnglish('')
+      setTranslated('')
+      setMotionNote('')
+      setDirty(false)
+    }
+    onStatus(`Moved to Recycle Bin: ${basenamePath(path)}`)
+  }, [onStatus, onPromptSourceChange, selectImage])
 
   const loadCaption = useCallback(
     async (imagePath: string) => {
@@ -495,7 +567,7 @@ export function PromptView({
       <aside className="right-pane prompt-right-pane">
         <div className="caption-panel">
           <div className="caption-header">
-            <label htmlFor="prompt-motion-note">動態說明（優先）</label>
+            <label htmlFor="prompt-motion-note">Motion description (priority)</label>
           </div>
           <div className="caption-field caption-field-motion">
             <textarea
@@ -505,7 +577,7 @@ export function PromptView({
               onChange={(e) => onMotionNoteChange(e.target.value)}
               disabled={!selectedPath || generating || videoGenerating}
               spellCheck={false}
-              placeholder="描述想要的鏡頭／動作／節奏（可中英）。生成時會同時參考圖片，並以這段說明為優先。"
+              placeholder="Describe the shot / action / pacing you want (Chinese or English OK). Generation also uses the image, and this note takes priority."
             />
           </div>
 
@@ -629,6 +701,18 @@ export function PromptView({
           </div>
         </div>
       </aside>
+
+      <ConfirmDialog
+        open={confirmDelete}
+        title="Delete image"
+        message={
+          selectedPath
+            ? `Move this image to the Recycle Bin?\n${basenamePath(selectedPath)}`
+            : 'Move this image to the Recycle Bin?'
+        }
+        onCancel={() => setConfirmDelete(false)}
+        onConfirm={() => void performDeleteImage()}
+      />
     </div>
   )
 }

@@ -22,10 +22,11 @@ import {
   probeComfyOnline
 } from '../services/comfyWan22Loop'
 import { parentDir } from '../services/comfyI2v'
-import { useArrowListNav } from '../hooks/useArrowListNav'
+import { useArrowListNav, isTextEntryTarget } from '../hooks/useArrowListNav'
 import { unloadLocalAiModels } from '../services/unloadLocalAi'
 import { ResourceMonitorPane } from './ResourceMonitorPane'
 import { ExtraLoraDialog } from './ExtraLoraDialog'
+import { ConfirmDialog } from './ConfirmDialog'
 import { SearchableSelect } from './SearchableSelect'
 import {
   ASPECT_PRESET_OPTIONS,
@@ -177,6 +178,7 @@ export function GenerateView({
   const [wan22LoraModels, setWan22LoraModels] = useState<{ name: string; path: string }[]>([])
   const [loraPopupOpen, setLoraPopupOpen] = useState(false)
   const [imagePicker, setImagePicker] = useState<null | 'start' | 'end'>(null)
+  const [confirmDeleteVideo, setConfirmDeleteVideo] = useState(false)
 
   const abortRef = useRef<AbortController | null>(null)
   const galleryRef = useRef<HTMLDivElement | null>(null)
@@ -189,6 +191,10 @@ export function GenerateView({
   startImageRef.current = startImagePath
   const promptTextRef = useRef(promptText)
   promptTextRef.current = promptText
+  const selectedVideoRef = useRef(selectedVideo)
+  selectedVideoRef.current = selectedVideo
+  const videosRef = useRef(videos)
+  videosRef.current = videos
 
   const patchDraft = useCallback(
     (partial: Partial<I2vGenerateDraft & Flf2vGenerateDraft>) => {
@@ -216,14 +222,15 @@ export function GenerateView({
   )
 
   const ignoreWhenOtherModal = useCallback((e: KeyboardEvent) => {
-    if (document.querySelector('.settings-modal')) return true
+    if (document.querySelector('.settings-modal, .confirm-modal')) return true
     const t = e.target
     if (t instanceof Element && t.closest('.lora-popup-modal')) return true
     return false
   }, [])
 
   useArrowListNav({
-    enabled: active && !imagePicker && !loraPopupOpen && videoPaths.length > 0,
+    enabled:
+      active && !imagePicker && !loraPopupOpen && !confirmDeleteVideo && videoPaths.length > 0,
     items: videoPaths,
     selectedId: selectedVideo,
     onSelect: selectGalleryVideo,
@@ -238,7 +245,7 @@ export function GenerateView({
       : startImagePath || draft.selectedImagePath || null
 
   useArrowListNav({
-    enabled: active && Boolean(imagePicker) && promptImagePaths.length > 0,
+    enabled: active && Boolean(imagePicker) && promptImagePaths.length > 0 && !confirmDeleteVideo,
     items: promptImagePaths,
     selectedId: pickerSelectedId,
     onSelect: selectPickerImage,
@@ -246,6 +253,43 @@ export function GenerateView({
     containerRef: imagePickerListRef,
     shouldIgnore: ignoreWhenOtherModal
   })
+
+  useEffect(() => {
+    if (!active) return
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key !== 'Delete') return
+      if (e.defaultPrevented) return
+      if (e.altKey || e.ctrlKey || e.metaKey) return
+      if (isTextEntryTarget(e.target)) return
+      if (imagePicker || loraPopupOpen) return
+      if (document.querySelector('.settings-modal, .confirm-modal, .lora-popup-modal')) return
+      if (!selectedVideoRef.current) return
+      e.preventDefault()
+      e.stopPropagation()
+      setConfirmDeleteVideo(true)
+    }
+    window.addEventListener('keydown', onKey, true)
+    return () => window.removeEventListener('keydown', onKey, true)
+  }, [active, imagePicker, loraPopupOpen])
+
+  const performDeleteVideo = useCallback(async () => {
+    const path = selectedVideoRef.current
+    setConfirmDeleteVideo(false)
+    if (!path) return
+    const res = await window.api.trashItem(path)
+    if (!res.ok) {
+      onStatus(res.error || 'Failed to move video to Recycle Bin', true)
+      return
+    }
+    const list = videosRef.current
+    const idx = list.findIndex((v) => v.path === path)
+    const nextList = list.filter((v) => v.path !== path)
+    setVideos(nextList)
+    const nextPath = nextList[idx]?.path ?? nextList[idx - 1]?.path ?? null
+    setSelectedVideo(nextPath)
+    if (!nextPath) setVideoMeta(null)
+    onStatus(`Moved to Recycle Bin: ${basenamePath(path)}`)
+  }, [onStatus])
 
   // Keep draft start image + prompt aligned with Prompt tab.
   useEffect(() => {
@@ -1005,7 +1049,7 @@ export function GenerateView({
             value={Number(draft[strengthKey])}
             step={0.05}
             min={0}
-            max={2}
+            max={5}
             title="Weight"
             disabled={!enabled || !value}
             onChange={(e) => patchDraft({ [strengthKey]: Number(e.target.value) })}
@@ -1432,7 +1476,7 @@ export function GenerateView({
                       title={
                         videoMeta.seed != null
                           ? `Copy seed ${videoMeta.seed} into Seed field`
-                          : 'No seed stored for this video'
+                          : 'No seed in filename'
                       }
                       onClick={() => {
                         if (videoMeta.seed == null) return
@@ -1511,6 +1555,18 @@ export function GenerateView({
         onChangeHigh={(extraLorasHigh) => patchDraft({ extraLorasHigh })}
         onChangeLow={(extraLorasLow) => patchDraft({ extraLorasLow })}
         onClose={() => setLoraPopupOpen(false)}
+      />
+
+      <ConfirmDialog
+        open={confirmDeleteVideo}
+        title="Delete video"
+        message={
+          selectedVideo
+            ? `Move this video to the Recycle Bin?\n${basenamePath(selectedVideo)}`
+            : 'Move this video to the Recycle Bin?'
+        }
+        onCancel={() => setConfirmDeleteVideo(false)}
+        onConfirm={() => void performDeleteVideo()}
       />
 
       {imagePicker ? (
