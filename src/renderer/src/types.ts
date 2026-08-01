@@ -144,6 +144,8 @@ export interface AppSettings {
   promptImagePath: string
   /** English prompt from Prompt view for that image. */
   promptText: string
+  /** When generating I2V prompt, include embedded image positive prompt from file metadata. */
+  useImagePrompt: boolean
   sharedComfy: SharedComfyDraft
   i2vDraft: I2vGenerateDraft
   flf2vDraft: Flf2vGenerateDraft
@@ -173,6 +175,7 @@ export const DEFAULT_SETTINGS: AppSettings = {
   downloadFolder: '',
   promptImagePath: '',
   promptText: '',
+  useImagePrompt: false,
   sharedComfy: { ...DEFAULT_SHARED_COMFY },
   i2vDraft: { ...DEFAULT_I2V_GENERATE_DRAFT },
   flf2vDraft: { ...DEFAULT_FLF2V_GENERATE_DRAFT },
@@ -247,6 +250,7 @@ export function normalizeSettings(
     downloadFolder: typeof r.downloadFolder === 'string' ? r.downloadFolder : '',
     promptImagePath: typeof r.promptImagePath === 'string' ? r.promptImagePath : '',
     promptText: typeof r.promptText === 'string' ? r.promptText : '',
+    useImagePrompt: typeof r.useImagePrompt === 'boolean' ? r.useImagePrompt : false,
     sharedComfy: migrated.sharedComfy,
     i2vDraft: migrated.i2vDraft,
     flf2vDraft: migrated.flf2vDraft,

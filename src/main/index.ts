@@ -27,6 +27,7 @@ import {
 import { getResourceStats, killProcessByPid } from './resourceStats'
 import { probeVideoFile, type VideoProbeInfo } from './videoProbe'
 import { writeVideoGalleryMeta } from './videoGalleryMeta'
+import { readImagePositivePrompt } from './imagePromptMeta'
 
 const execFileAsync = promisify(execFile)
 
@@ -155,6 +156,7 @@ interface AppSettings {
   downloadFolder: string
   promptImagePath: string
   promptText: string
+  useImagePrompt: boolean
   sharedComfy: SharedComfyDraft
   i2vDraft: I2vGenerateDraft
   flf2vDraft: Flf2vGenerateDraft
@@ -273,6 +275,7 @@ const DEFAULT_SETTINGS: AppSettings = {
   downloadFolder: '',
   promptImagePath: '',
   promptText: '',
+  useImagePrompt: false,
   sharedComfy: { ...DEFAULT_SHARED_COMFY },
   i2vDraft: { ...DEFAULT_I2V_DRAFT },
   flf2vDraft: { ...DEFAULT_FLF2V_DRAFT },
@@ -593,6 +596,10 @@ async function loadSettings(): Promise<AppSettings> {
       downloadFolder: typeof parsed.downloadFolder === 'string' ? parsed.downloadFolder : '',
       promptImagePath: typeof parsed.promptImagePath === 'string' ? parsed.promptImagePath : '',
       promptText: typeof parsed.promptText === 'string' ? parsed.promptText : '',
+      useImagePrompt:
+        typeof parsed.useImagePrompt === 'boolean'
+          ? parsed.useImagePrompt
+          : DEFAULT_SETTINGS.useImagePrompt,
       sharedComfy: migrated.sharedComfy,
       i2vDraft: migrated.i2vDraft,
       flf2vDraft: migrated.flf2vDraft,
@@ -1015,6 +1022,24 @@ app.whenReady().then(async () => {
       base64: buf.toString('base64')
     }
   })
+
+  ipcMain.handle(
+    'fs:readImagePositivePrompt',
+    async (
+      _event,
+      imagePath: string
+    ): Promise<{ positive: string | null; source: string | null; error?: string }> => {
+      try {
+        return await readImagePositivePrompt(imagePath)
+      } catch (err) {
+        return {
+          positive: null,
+          source: null,
+          error: err instanceof Error ? err.message : String(err)
+        }
+      }
+    }
+  )
 
   ipcMain.handle('fs:pathExists', async (_event, targetPath: string) => {
     const raw = typeof targetPath === 'string' ? targetPath.trim() : ''

@@ -999,6 +999,20 @@ button.danger.kbd-focus {
   flex-shrink: 0;
 }
 
+.caption-image-prompt-toggle {
+  gap: 0.4rem;
+}
+
+.caption-image-prompt-toggle .lora-toggle-label {
+  font-size: 0.78rem;
+  white-space: nowrap;
+  color: var(--text-muted, #9aa3b2);
+}
+
+.caption-image-prompt-toggle.is-on .lora-toggle-label {
+  color: var(--text);
+}
+
 .lang-select {
   background: var(--bg-input);
   border: 1px solid var(--border);

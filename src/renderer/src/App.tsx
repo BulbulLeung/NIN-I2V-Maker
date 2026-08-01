@@ -15,6 +15,7 @@ import { parseSidecarCaption } from './utils/sidecarCaption'
 import { SettingsDialog } from './components/SettingsDialog'
 import { PromptView } from './components/PromptView'
 import { GenerateView } from './components/GenerateView'
+import { setLocalAiBlocked } from './services/localAiGate'
 
 interface StatusState {
   message: string
@@ -33,6 +34,7 @@ export function App() {
   const [ready, setReady] = useState(false)
   const [settingsOpen, setSettingsOpen] = useState(false)
   const [folderMenuOpen, setFolderMenuOpen] = useState(false)
+  const [videoGenerating, setVideoGenerating] = useState(false)
   const [promptImages, setPromptImages] = useState<ImageItem[]>([])
   const [status, setStatus] = useState<StatusState>({
     message: '',
@@ -199,6 +201,11 @@ export function App() {
     )
   }
 
+  const onVideoGeneratingChange = useCallback((generating: boolean) => {
+    setVideoGenerating(generating)
+    setLocalAiBlocked(generating)
+  }, [])
+
   const onSharedComfyChange = (sharedComfy: SharedComfyDraft) => {
     persistSettings({ sharedComfy })
   }
@@ -363,6 +370,7 @@ export function App() {
         <PromptView
           settings={settings}
           active={settings.activeView === 'prompt'}
+          videoGenerating={videoGenerating}
           onSettingsChange={persistSettings}
           onStatus={onStatus}
           onPromptSourceChange={onPromptSourceChange}
@@ -388,6 +396,8 @@ export function App() {
           onSharedComfyChange={onSharedComfyChange}
           onDraftChange={(d) => onI2vDraftChange(d as I2vGenerateDraft)}
           onStatus={onStatus}
+          videoGenerating={videoGenerating}
+          onVideoGeneratingChange={onVideoGeneratingChange}
         />
       </div>
 
@@ -409,6 +419,8 @@ export function App() {
           onSharedComfyChange={onSharedComfyChange}
           onDraftChange={(d) => onFlf2vDraftChange(d as Flf2vGenerateDraft)}
           onStatus={onStatus}
+          videoGenerating={videoGenerating}
+          onVideoGeneratingChange={onVideoGeneratingChange}
         />
       </div>
 
@@ -430,6 +442,8 @@ export function App() {
           onSharedComfyChange={onSharedComfyChange}
           onDraftChange={(d) => onLoopDraftChange(d as LoopGenerateDraft)}
           onStatus={onStatus}
+          videoGenerating={videoGenerating}
+          onVideoGeneratingChange={onVideoGeneratingChange}
         />
       </div>
 

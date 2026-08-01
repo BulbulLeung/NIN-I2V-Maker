@@ -1,6 +1,7 @@
 import type { AppSettings } from '../types'
 import { LANGUAGES } from '../types'
 import { formatLocalAiError } from './localAiError'
+import { assertLocalAiAllowed } from './localAiGate'
 
 const TRANSLATE_TIMEOUT_MS = 120_000
 const CACHE_MAX = 80
@@ -196,6 +197,7 @@ export async function translateText(
   direction: 'en-to-target' | 'target-to-en',
   signal?: AbortSignal
 ): Promise<string> {
+  assertLocalAiAllowed()
   const trimmed = text.trim()
   if (!trimmed) return ''
 

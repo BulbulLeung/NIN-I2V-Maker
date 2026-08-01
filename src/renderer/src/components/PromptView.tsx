@@ -22,6 +22,8 @@ interface Props {
   settings: AppSettings
   /** False while another tab is shown (Prompt stays mounted). */
   active?: boolean
+  /** True while a Generate panel is running video — Local AI is paused. */
+  videoGenerating?: boolean
   onSettingsChange: (partial: Partial<AppSettings>) => void
   onStatus: (msg: string, isError?: boolean, options?: { sticky?: boolean }) => void
   onPromptSourceChange: (imagePath: string, promptText: string) => void
@@ -31,6 +33,7 @@ interface Props {
 export function PromptView({
   settings,
   active = true,
+  videoGenerating = false,
   onSettingsChange,
   onStatus,
   onPromptSourceChange,
@@ -72,8 +75,12 @@ export function PromptView({
     selectedPath,
     setEnglish,
     setTranslated,
-    enabled: Boolean(selectedPath) && !generating
+    enabled: Boolean(selectedPath) && !generating && !videoGenerating
   })
+
+  useEffect(() => {
+    if (videoGenerating) cancelInFlight()
+  }, [videoGenerating, cancelInFlight])
 
   const loadImages = useCallback(
     async (dir: string | null) => {
@@ -221,6 +228,10 @@ export function PromptView({
 
   const runGenerate = async () => {
     if (!selectedPath) return
+    if (videoGenerating) {
+      onStatus('Local AI is paused while video is generating', true)
+      return
+    }
     // Drop any in-flight / debounced translation so prompt gen wins immediately.
     cancelInFlight()
     setTranslated('')
@@ -235,11 +246,25 @@ export function PromptView({
     )
     let generatedPrompt: string | null = null
     try {
+      let imagePositive: string | undefined
+      if (settings.useImagePrompt) {
+        const meta = await window.api.readImagePositivePrompt(selectedPath)
+        if (ac.signal.aborted) return
+        if (meta.error) {
+          onStatus(`Image prompt read failed: ${meta.error}`, true)
+        } else if (meta.positive?.trim()) {
+          imagePositive = meta.positive.trim()
+          onStatus('Using embedded image prompt…', false, { sticky: true })
+        } else {
+          onStatus('No embedded image prompt in file metadata', false, { sticky: true })
+        }
+      }
       const prompt = await generateI2vPromptForImage(
         settings,
         selectedPath,
         ac.signal,
-        motionNote
+        motionNote,
+        imagePositive
       )
       if (ac.signal.aborted) return
       generatedPrompt = prompt
@@ -247,7 +272,11 @@ export function PromptView({
       setEnglishSnapshot(prompt)
       setDirty(true)
       setTranslated('')
-      onStatus('Prompt generated')
+      onStatus(
+        imagePositive
+          ? 'Prompt generated (with image prompt)'
+          : 'Prompt generated'
+      )
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err)
       if (msg === 'Prompt generation cancelled') {
@@ -474,7 +503,7 @@ export function PromptView({
               className="caption-textarea caption-textarea-motion"
               value={motionNote}
               onChange={(e) => onMotionNoteChange(e.target.value)}
-              disabled={!selectedPath || generating}
+              disabled={!selectedPath || generating || videoGenerating}
               spellCheck={false}
               placeholder="描述想要的鏡頭／動作／節奏（可中英）。生成時會同時參考圖片，並以這段說明為優先。"
             />
@@ -483,6 +512,25 @@ export function PromptView({
           <div className="caption-header">
             <label htmlFor="prompt-english">English prompt</label>
             <div className="caption-header-actions">
+              <div
+                className={`caption-image-prompt-toggle lora-toggle${settings.useImagePrompt ? ' is-on' : ''}${generating || videoGenerating ? ' is-disabled' : ''}`}
+                title="On: include the image file's embedded positive prompt so the vision model can better judge characters, composition, expression, and action"
+              >
+                <span className="lora-toggle-label">Use image prompt</span>
+                <button
+                  type="button"
+                  className="lora-switch"
+                  role="switch"
+                  aria-checked={settings.useImagePrompt}
+                  aria-label="Use image prompt"
+                  disabled={generating || videoGenerating}
+                  onClick={() =>
+                    onSettingsChange({ useImagePrompt: !settings.useImagePrompt })
+                  }
+                >
+                  <span className="lora-switch-knob" />
+                </button>
+              </div>
               {generating ? (
                 <button type="button" className="danger" onClick={cancelGenerate}>
                   Cancel
@@ -491,7 +539,12 @@ export function PromptView({
                 <button
                   type="button"
                   className="primary"
-                  disabled={!selectedPath}
+                  disabled={!selectedPath || videoGenerating}
+                  title={
+                    videoGenerating
+                      ? 'Local AI is paused while video is generating'
+                      : undefined
+                  }
                   onClick={() => void runGenerate()}
                 >
                   Generate Prompt
@@ -505,9 +558,13 @@ export function PromptView({
               className="caption-textarea"
               value={english}
               onChange={(e) => onEnglishChange(e.target.value)}
-              disabled={!selectedPath || generating}
+              disabled={!selectedPath || generating || videoGenerating}
               spellCheck={false}
-              placeholder="I2V motion prompt (English)"
+              placeholder={
+                videoGenerating
+                  ? 'Local AI paused — video is generating'
+                  : 'I2V motion prompt (English)'
+              }
             />
             {generating ? (
               <div className="caption-field-overlay">
@@ -525,7 +582,7 @@ export function PromptView({
                 aria-label="Target language"
                 title="Target language"
                 value={settings.targetLanguage}
-                disabled={!selectedPath || generating}
+                disabled={!selectedPath || generating || videoGenerating}
                 onChange={(e) => onSettingsChange({ targetLanguage: e.target.value })}
               >
                 {LANGUAGES.map((lang) => (
@@ -542,9 +599,13 @@ export function PromptView({
               className="caption-textarea"
               value={translated}
               onChange={(e) => onTranslatedChange(e.target.value)}
-              disabled={!selectedPath || generating}
+              disabled={!selectedPath || generating || videoGenerating}
               spellCheck={false}
-              placeholder={`Translation (${langLabel})`}
+              placeholder={
+                videoGenerating
+                  ? 'Local AI paused — video is generating'
+                  : `Translation (${langLabel})`
+              }
             />
             {showTranslateOverlay ? (
               <div className="caption-field-overlay">

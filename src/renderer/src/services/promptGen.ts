@@ -1,5 +1,6 @@
 import type { AppSettings } from '../types'
 import { formatLocalAiError } from './localAiError'
+import { assertLocalAiAllowed } from './localAiGate'
 
 const PROMPT_TIMEOUT_MS = 300_000
 
@@ -185,15 +186,32 @@ export async function generateI2vPromptForImage(
   settings: AppSettings,
   imagePath: string,
   signal?: AbortSignal,
-  motionNote?: string
+  motionNote?: string,
+  imagePositivePrompt?: string
 ): Promise<string> {
+  assertLocalAiAllowed()
   const presetPrompt = activePresetPrompt(settings)
   if (!presetPrompt) throw new Error('No prompt preset selected')
 
   const note = (motionNote || '').trim()
+  const embedded = (imagePositivePrompt || '').trim()
   let fullPrompt = presetPrompt
+  if (embedded) {
+    fullPrompt = `${fullPrompt}
+
+=== EMBEDDED IMAGE POSITIVE PROMPT ===
+The source image file embeds the following positive / generation prompt in its metadata.
+Use it to clarify character identity, cast composition, expression, pose, wardrobe, and intended action.
+- Prefer what the attached image actually shows when text and pixels conflict.
+- Do not copy the embedded prompt verbatim into the I2V output; distill motion from image + this context.
+- Still write a Wan 2.2 I2V English motion paragraph (camera / subject action / timing), not a static appearance dump.
+
+Embedded Positive Prompt:
+${embedded}
+`
+  }
   if (note) {
-    fullPrompt = `${presetPrompt}
+    fullPrompt = `${fullPrompt}
 
 === USER MOTION DESCRIPTION (HIGHEST PRIORITY) ===
 A user-provided motion description is included below. Treat it as the authoritative intent for camera move, subject action, timing, and atmosphere.

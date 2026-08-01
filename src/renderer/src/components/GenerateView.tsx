@@ -23,6 +23,7 @@ import {
 } from '../services/comfyWan22Loop'
 import { parentDir } from '../services/comfyI2v'
 import { useArrowListNav } from '../hooks/useArrowListNav'
+import { unloadLocalAiModels } from '../services/unloadLocalAi'
 import { ResourceMonitorPane } from './ResourceMonitorPane'
 import { ExtraLoraDialog } from './ExtraLoraDialog'
 import { SearchableSelect } from './SearchableSelect'
@@ -57,6 +58,9 @@ interface Props {
   onSharedComfyChange: (shared: SharedComfyDraft) => void
   onDraftChange: (draft: I2vGenerateDraft | Flf2vGenerateDraft) => void
   onStatus: (msg: string, isError?: boolean, options?: { sticky?: boolean }) => void
+  /** True while any generate panel is running a video job (blocks Local AI). */
+  videoGenerating?: boolean
+  onVideoGeneratingChange?: (generating: boolean) => void
 }
 
 interface GalleryVideo {
@@ -147,7 +151,9 @@ export function GenerateView({
   onSelectStartImage,
   onSharedComfyChange,
   onDraftChange,
-  onStatus
+  onStatus,
+  videoGenerating = false,
+  onVideoGeneratingChange
 }: Props) {
   const [comfyOnline, setComfyOnline] = useState(false)
   const [comfyBusy, setComfyBusy] = useState(false)
@@ -545,10 +551,15 @@ export function GenerateView({
     }
     setGenerating(false)
     setBatchProgress(null)
+    onVideoGeneratingChange?.(false)
     onStatus('Generation aborted')
   }
 
   const runGenerate = async () => {
+    if (videoGenerating && !generating) {
+      onStatus('Another video generation is already running', true)
+      return
+    }
     const d = draftRef.current
     const s = sharedRef.current
     const flf = isFlfDraft(d) ? d : null
@@ -640,6 +651,7 @@ export function GenerateView({
     setGenerateElapsedSec(0)
     setBatchProgress({ current: 1, total: batchTotal })
     setGenerating(true)
+    onVideoGeneratingChange?.(true)
     const startedAt = Date.now()
 
     const formatElapsed = (ms: number) => {
@@ -655,6 +667,28 @@ export function GenerateView({
     }, 250)
 
     try {
+      report('Unloading Local AI models…')
+      try {
+        const unloaded = await unloadLocalAiModels(settings)
+        const parts: string[] = []
+        if (unloaded.ollamaUnloaded.length) {
+          parts.push(`Ollama: ${unloaded.ollamaUnloaded.join(', ')}`)
+        }
+        if (unloaded.lmStudioUnloaded.length) {
+          parts.push(`LM Studio: ${unloaded.lmStudioUnloaded.join(', ')}`)
+        }
+        for (const n of unloaded.notes) parts.push(n)
+        if (parts.length > 0) {
+          report(`Local AI unloaded — ${parts.join(' · ')}`)
+        } else {
+          report('Local AI: no loaded models (or servers offline)')
+        }
+      } catch (err) {
+        report(
+          `Local AI unload skipped: ${err instanceof Error ? err.message : String(err)}`
+        )
+      }
+
       report(
         `Prepare ${modeLabel}: ${width}×${height}, ${lengthFrames} frames @ ${d.fps}fps, steps ${d.steps} (refiner ${d.refinerStep})` +
           (batchTotal > 1 ? `, batch ×${batchTotal}` : '')
@@ -816,6 +850,7 @@ export function GenerateView({
       setGenerating(false)
       setBatchProgress(null)
       setGenerateElapsedSec(0)
+      onVideoGeneratingChange?.(false)
     }
   }
 
@@ -1323,7 +1358,10 @@ export function GenerateView({
               <button
                 type="button"
                 className="primary lora-test-generate-btn"
-                disabled={comfyBusy}
+                disabled={comfyBusy || videoGenerating}
+                title={
+                  videoGenerating ? 'Another panel is generating — Local AI is paused' : undefined
+                }
                 onClick={() => void runGenerate()}
               >
                 Generate

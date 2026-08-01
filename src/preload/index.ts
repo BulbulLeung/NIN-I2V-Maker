@@ -103,6 +103,7 @@ export interface AppSettings {
   downloadFolder: string
   promptImagePath: string
   promptText: string
+  useImagePrompt: boolean
   sharedComfy: SharedComfyDraft
   i2vDraft: I2vGenerateDraft
   flf2vDraft: Flf2vGenerateDraft
@@ -161,6 +162,11 @@ const api = {
 
   readImageBase64: (imagePath: string): Promise<{ mimeType: string; base64: string }> =>
     ipcRenderer.invoke('fs:readImageBase64', imagePath),
+
+  readImagePositivePrompt: (
+    imagePath: string
+  ): Promise<{ positive: string | null; source: string | null; error?: string }> =>
+    ipcRenderer.invoke('fs:readImagePositivePrompt', imagePath),
 
   pathExists: (targetPath: string): Promise<boolean> =>
     ipcRenderer.invoke('fs:pathExists', targetPath),
