@@ -22,6 +22,12 @@
     "files": [
       "out/**/*"
     ],
+    "extraResources": [
+      {
+        "from": "resources/comfy_custom_nodes",
+        "to": "comfy_custom_nodes"
+      }
+    ],
     "asar": true,
     "icon": "build/icon.ico",
     "win": {

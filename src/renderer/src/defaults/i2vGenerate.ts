@@ -18,6 +18,66 @@ export interface SharedComfyDraft {
   vaePath: string
   clipPath: string
   outputFolder: string
+  /** SaveVideo container: auto / mp4 / webm / mkv */
+  videoFormat: VideoSaveFormat
+  /** SaveVideo codec: auto / h264 / h265 / av1 / vp9 / prores */
+  videoCodec: VideoSaveCodec
+  /** CreateVideo bit_depth (8 or 10). */
+  videoBitDepth: VideoSaveBitDepth
+  /** Encoder CRF — lower = higher quality / larger file (typical 0–51). */
+  videoCrf: number
+  /** Launch ComfyUI with --use-sage-attention when true. */
+  useSageAttention: boolean
+}
+
+export type VideoSaveFormat = 'auto' | 'mp4' | 'webm' | 'mkv'
+export type VideoSaveCodec = 'auto' | 'h264' | 'h265' | 'av1' | 'vp9' | 'prores'
+export type VideoSaveBitDepth = 8 | 10
+
+export const VIDEO_SAVE_FORMAT_OPTIONS: { value: VideoSaveFormat; label: string }[] = [
+  { value: 'auto', label: 'Auto' },
+  { value: 'mp4', label: 'MP4' },
+  { value: 'webm', label: 'WebM' },
+  { value: 'mkv', label: 'MKV' }
+]
+
+export const VIDEO_SAVE_CODEC_OPTIONS: { value: VideoSaveCodec; label: string }[] = [
+  { value: 'auto', label: 'Auto' },
+  { value: 'h264', label: 'H264' },
+  { value: 'h265', label: 'H265 (HEVC)' },
+  { value: 'av1', label: 'AV1' },
+  { value: 'vp9', label: 'VP9' },
+  { value: 'prores', label: 'ProRes' }
+]
+
+export const VIDEO_SAVE_BIT_DEPTH_OPTIONS: { value: VideoSaveBitDepth; label: string }[] = [
+  { value: 8, label: '8bit' },
+  { value: 10, label: '10bit' }
+]
+
+export const DEFAULT_VIDEO_CRF = 23
+export const VIDEO_CRF_MIN = 0
+export const VIDEO_CRF_MAX = 51
+
+export function isVideoSaveFormat(value: string): value is VideoSaveFormat {
+  return VIDEO_SAVE_FORMAT_OPTIONS.some((o) => o.value === value)
+}
+
+export function isVideoSaveCodec(value: string): value is VideoSaveCodec {
+  return VIDEO_SAVE_CODEC_OPTIONS.some((o) => o.value === value)
+}
+
+export function normalizeVideoBitDepth(raw: unknown, fallback: VideoSaveBitDepth = 8): VideoSaveBitDepth {
+  const n = typeof raw === 'number' ? raw : Number(raw)
+  if (n === 10) return 10
+  if (n === 8) return 8
+  return fallback
+}
+
+export function normalizeVideoCrf(raw: unknown, fallback = DEFAULT_VIDEO_CRF): number {
+  const n = typeof raw === 'number' ? raw : Number(raw)
+  if (!Number.isFinite(n)) return fallback
+  return Math.min(VIDEO_CRF_MAX, Math.max(VIDEO_CRF_MIN, Math.round(n)))
 }
 
 export interface ExtraLoraEntry {
@@ -56,8 +116,11 @@ export interface VideoGenerateParams {
   loraStrength?: number
   loraHighStrength: number
   loraLowStrength: number
-  /** Speed / Lightning LoRA (lightx2v). */
+  /** Speed / Lightning LoRA (lightx2v) — legacy master; prefer loraHighEnabled / loraLowEnabled. */
   useLightningLora: boolean
+  /** Per-side Speed LoRA enable (path kept when off). */
+  loraHighEnabled: boolean
+  loraLowEnabled: boolean
   /** Extra LoRAs on high-noise UNET chain (Wan22 LoRA folder). */
   extraLorasHigh: ExtraLoraEntry[]
   /** Extra LoRAs on low-noise UNET chain (Wan22 LoRA folder). */
@@ -94,7 +157,12 @@ export const DEFAULT_SHARED_COMFY: SharedComfyDraft = {
   wan22LoraFolder: '',
   vaePath: '',
   clipPath: '',
-  outputFolder: ''
+  outputFolder: '',
+  videoFormat: 'auto',
+  videoCodec: 'h264',
+  videoBitDepth: 8,
+  videoCrf: DEFAULT_VIDEO_CRF,
+  useSageAttention: true
 }
 
 export const DEFAULT_VIDEO_PARAMS: VideoGenerateParams = {
@@ -119,6 +187,8 @@ export const DEFAULT_VIDEO_PARAMS: VideoGenerateParams = {
   loraHighStrength: 0.8,
   loraLowStrength: 0.8,
   useLightningLora: true,
+  loraHighEnabled: true,
+  loraLowEnabled: true,
   extraLorasHigh: [],
   extraLorasLow: [],
   selectedImagePath: '',
@@ -199,6 +269,10 @@ function normalizeVideoParams(
 ): VideoGenerateParams {
   const r = (raw && typeof raw === 'object' ? raw : {}) as Record<string, unknown>
   const useLightning = Boolean(r.useLightningLora ?? defaults.useLightningLora)
+  const loraHighEnabled =
+    typeof r.loraHighEnabled === 'boolean' ? r.loraHighEnabled : useLightning
+  const loraLowEnabled =
+    typeof r.loraLowEnabled === 'boolean' ? r.loraLowEnabled : useLightning
   const fps = num(r.fps, defaults.fps, 1, 60)
   // Migrate old `length`-only drafts → approximate seconds
   let resolvedSeconds = num(r.seconds, defaults.seconds, 0.5, 60)
@@ -237,7 +311,9 @@ function normalizeVideoParams(
       0,
       2
     ),
-    useLightningLora: useLightning,
+    useLightningLora: loraHighEnabled || loraLowEnabled,
+    loraHighEnabled,
+    loraLowEnabled,
     extraLorasHigh: (() => {
       const hasSplit = Array.isArray(r.extraLorasHigh) || Array.isArray(r.extraLorasLow)
       if (hasSplit) return normalizeExtraLoras(r.extraLorasHigh)
@@ -262,6 +338,8 @@ export function normalizeSharedComfyDraft(raw: unknown): SharedComfyDraft {
   // Legacy installs kept Speed LoRA paths on the same object as Comfy paths.
   const speedLoraFolder =
     str(r.speedLoraFolder) || parentDir(str(r.loraHighPath)) || parentDir(str(r.loraLowPath))
+  const formatRaw = str(r.videoFormat, DEFAULT_SHARED_COMFY.videoFormat)
+  const codecRaw = str(r.videoCodec, DEFAULT_SHARED_COMFY.videoCodec)
   return {
     comfyUiBatPath: str(r.comfyUiBatPath),
     ditModelFolder,
@@ -271,7 +349,15 @@ export function normalizeSharedComfyDraft(raw: unknown): SharedComfyDraft {
     wan22LoraFolder: str(r.wan22LoraFolder),
     vaePath: str(r.vaePath),
     clipPath: str(r.clipPath),
-    outputFolder: str(r.outputFolder)
+    outputFolder: str(r.outputFolder),
+    videoFormat: isVideoSaveFormat(formatRaw) ? formatRaw : DEFAULT_SHARED_COMFY.videoFormat,
+    videoCodec: isVideoSaveCodec(codecRaw) ? codecRaw : DEFAULT_SHARED_COMFY.videoCodec,
+    videoBitDepth: normalizeVideoBitDepth(r.videoBitDepth, DEFAULT_SHARED_COMFY.videoBitDepth),
+    videoCrf: normalizeVideoCrf(r.videoCrf, DEFAULT_SHARED_COMFY.videoCrf),
+    useSageAttention:
+      typeof r.useSageAttention === 'boolean'
+        ? r.useSageAttention
+        : DEFAULT_SHARED_COMFY.useSageAttention
   }
 }
 
@@ -325,8 +411,13 @@ export function migrateGenerateSettings(raw: Record<string, unknown>): {
       : null
     if (sc) {
       for (const key of Object.keys(DEFAULT_SHARED_COMFY) as (keyof SharedComfyDraft)[]) {
-        if (typeof sc[key] === 'string' && (sc[key] as string).length > 0) {
-          shared[key] = sc[key] as string
+        const v = sc[key]
+        if (typeof v === 'string' && v.length > 0) {
+          ;(shared as Record<string, unknown>)[key] = v
+        } else if (typeof v === 'number' && Number.isFinite(v)) {
+          ;(shared as Record<string, unknown>)[key] = v
+        } else if (typeof v === 'boolean') {
+          ;(shared as Record<string, unknown>)[key] = v
         }
       }
     }

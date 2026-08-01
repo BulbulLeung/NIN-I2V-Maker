@@ -1,6 +1,21 @@
 import { useEffect, useMemo, useState } from 'react'
-import type { AppSettings, PromptPreset, SharedComfyDraft, UiGpuMode } from '../types'
-import { LANGUAGES } from '../types'
+import type {
+  AppSettings,
+  PromptPreset,
+  SharedComfyDraft,
+  UiGpuMode,
+  VideoSaveBitDepth,
+  VideoSaveCodec,
+  VideoSaveFormat
+} from '../types'
+import {
+  LANGUAGES,
+  VIDEO_CRF_MAX,
+  VIDEO_CRF_MIN,
+  VIDEO_SAVE_BIT_DEPTH_OPTIONS,
+  VIDEO_SAVE_CODEC_OPTIONS,
+  VIDEO_SAVE_FORMAT_OPTIONS
+} from '../types'
 import { createDefaultPromptPreset } from '../defaults/i2vPromptPresets'
 import { listModels, testConnection } from '../services/translation'
 import { DownloadFolderField } from './DownloadFolderField'
@@ -515,6 +530,99 @@ export function SettingsDialog({ settings, open, onClose, onSave }: Props) {
                   Finished Wan2.2 videos are copied here and shown in the I2V / FLF2V / LOOP gallery.
                 </p>
               </label>
+
+              <div className="field-row-grid">
+                <label className="field">
+                  <span>Video format</span>
+                  <select
+                    value={gd.videoFormat}
+                    onChange={(e) =>
+                      patchSharedComfy({ videoFormat: e.target.value as VideoSaveFormat })
+                    }
+                  >
+                    {VIDEO_SAVE_FORMAT_OPTIONS.map((o) => (
+                      <option key={o.value} value={o.value}>
+                        {o.label}
+                      </option>
+                    ))}
+                  </select>
+                </label>
+                <label className="field">
+                  <span>Video codec</span>
+                  <select
+                    value={gd.videoCodec}
+                    onChange={(e) =>
+                      patchSharedComfy({ videoCodec: e.target.value as VideoSaveCodec })
+                    }
+                  >
+                    {VIDEO_SAVE_CODEC_OPTIONS.map((o) => (
+                      <option key={o.value} value={o.value}>
+                        {o.label}
+                      </option>
+                    ))}
+                  </select>
+                </label>
+              </div>
+
+              <div className="field-row-grid">
+                <label className="field">
+                  <span>Bit depth</span>
+                  <select
+                    value={gd.videoBitDepth}
+                    onChange={(e) =>
+                      patchSharedComfy({
+                        videoBitDepth: Number(e.target.value) as VideoSaveBitDepth
+                      })
+                    }
+                  >
+                    {VIDEO_SAVE_BIT_DEPTH_OPTIONS.map((o) => (
+                      <option key={o.value} value={o.value}>
+                        {o.label}
+                      </option>
+                    ))}
+                  </select>
+                </label>
+                <label className="field">
+                  <span>Compression (CRF) · {gd.videoCrf}</span>
+                  <input
+                    type="range"
+                    min={VIDEO_CRF_MIN}
+                    max={VIDEO_CRF_MAX}
+                    step={1}
+                    value={gd.videoCrf}
+                    disabled={gd.videoCodec === 'prores'}
+                    onChange={(e) => patchSharedComfy({ videoCrf: Number(e.target.value) })}
+                  />
+                </label>
+              </div>
+              <p className="field-hint">
+                Encoded directly by the NIN ComfyUI custom node (H264 / H265 / AV1 / VP9 / ProRes) —
+                not converted from H264. Lower CRF = higher quality / larger file. Ignored for ProRes.
+                Restart ComfyUI (Stop → Start) after updating the app so the custom node loads.
+              </p>
+
+              <div
+                className={`generate-aspect-toggle lora-toggle${gd.useSageAttention ? ' is-on' : ''}`}
+              >
+                <span className="lora-toggle-label">Use SageAttention</span>
+                <button
+                  type="button"
+                  className="lora-switch"
+                  role="switch"
+                  aria-checked={gd.useSageAttention}
+                  aria-label="Use SageAttention"
+                  onClick={() =>
+                    patchSharedComfy({ useSageAttention: !gd.useSageAttention })
+                  }
+                >
+                  <span className="lora-switch-knob" />
+                </button>
+              </div>
+              <p className="field-hint">
+                Starts ComfyUI with <code>--use-sage-attention</code> for faster sampling. Requires
+                sageattention in the Python env (see UI tab). Changing this restarts ComfyUI on next
+                Start / Generate.
+              </p>
             </>
           )}
 

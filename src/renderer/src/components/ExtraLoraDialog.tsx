@@ -159,12 +159,6 @@ export function ExtraLoraDialog({
             onChange={onChangeLow}
           />
         </div>
-        <div className="modal-actions">
-          <span className="spacer" />
-          <button type="button" className="primary" onClick={onClose}>
-            Done
-          </button>
-        </div>
       </div>
     </div>
   )

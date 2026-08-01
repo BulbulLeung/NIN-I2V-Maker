@@ -305,7 +305,6 @@ export function App() {
         aria-live="polite"
         aria-atomic="true"
       >
-        <span className="system-message-bar-label">System</span>
         <span
           className={`system-message-bar-text${status.isError ? ' is-error' : ''}${!status.message ? ' is-idle' : ''}`}
         >

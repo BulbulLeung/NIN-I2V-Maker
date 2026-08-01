@@ -20,7 +20,10 @@ import {
   type LoopGenerateDraft,
   type SharedComfyDraft,
   type ExtraLoraEntry,
-  type Wan22VideoMode
+  type Wan22VideoMode,
+  type VideoSaveBitDepth,
+  type VideoSaveCodec,
+  type VideoSaveFormat
 } from './defaults/i2vGenerate'
 import { join } from './utils/pathJoin'
 
@@ -32,6 +35,9 @@ export type {
   I2vGenerateDraft,
   LoopGenerateDraft,
   SharedComfyDraft,
+  VideoSaveBitDepth,
+  VideoSaveCodec,
+  VideoSaveFormat,
   Wan22VideoMode
 }
 export {
@@ -39,6 +45,12 @@ export {
   DEFAULT_I2V_GENERATE_DRAFT,
   DEFAULT_LOOP_GENERATE_DRAFT,
   DEFAULT_SHARED_COMFY,
+  DEFAULT_VIDEO_CRF,
+  VIDEO_CRF_MAX,
+  VIDEO_CRF_MIN,
+  VIDEO_SAVE_BIT_DEPTH_OPTIONS,
+  VIDEO_SAVE_CODEC_OPTIONS,
+  VIDEO_SAVE_FORMAT_OPTIONS,
   framesFromSeconds,
   migrateGenerateSettings,
   normalizeActiveView,

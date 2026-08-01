@@ -79,18 +79,18 @@ export function parentDir(fullPath: string): string {
  */
 export function buildWan22I2vWorkflow(p: ComfyI2vParams): Record<string, unknown> {
   const strength = p.loraStrength ?? 1
-  const useLora =
-    Boolean(p.useLightningLora) &&
-    Boolean((p.loraHighName || '').trim()) &&
-    Boolean((p.loraLowName || '').trim())
+  const highLoraName = (p.loraHighName || '').trim()
+  const lowLoraName = (p.loraLowName || '').trim()
+  const useHighLora = Boolean(highLoraName)
+  const useLowLora = Boolean(lowLoraName)
 
   const steps = Math.max(2, Math.floor(p.steps))
   const splitAt = Math.max(1, Math.floor(steps / 2))
   const seed =
     p.seed < 0 ? Math.floor(Math.random() * 1_000_000_000_000) : Math.floor(p.seed)
 
-  const highModelNode = useLora ? '21' : '11'
-  const lowModelNode = useLora ? '22' : '12'
+  const highModelNode = useHighLora ? '21' : '11'
+  const lowModelNode = useLowLora ? '22' : '12'
 
   const graph: Record<string, unknown> = {
     '1': {
@@ -231,20 +231,22 @@ export function buildWan22I2vWorkflow(p: ComfyI2vParams): Record<string, unknown
     }
   }
 
-  if (useLora) {
+  if (useHighLora) {
     graph['21'] = {
       class_type: 'LoraLoaderModelOnly',
       inputs: {
         model: ['11', 0],
-        lora_name: (p.loraHighName || '').trim(),
+        lora_name: highLoraName,
         strength_model: strength
       }
     }
+  }
+  if (useLowLora) {
     graph['22'] = {
       class_type: 'LoraLoaderModelOnly',
       inputs: {
         model: ['12', 0],
-        lora_name: (p.loraLowName || '').trim(),
+        lora_name: lowLoraName,
         strength_model: strength
       }
     }

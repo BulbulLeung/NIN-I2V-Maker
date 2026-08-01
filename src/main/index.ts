@@ -25,6 +25,7 @@ import {
   pythonInstallRunning
 } from './pythonEnv'
 import { getResourceStats, killProcessByPid } from './resourceStats'
+import { probeVideoFile, type VideoProbeInfo } from './videoProbe'
 
 const execFileAsync = promisify(execFile)
 
@@ -38,6 +39,9 @@ const WAN_DEFAULT_NEGATIVE =
 // Avoid Chromium HTTP disk-cache corruption when loading many local-file:// thumbnails.
 app.commandLine.appendSwitch('disable-http-cache')
 app.commandLine.appendSwitch('disk-cache-size', '0')
+// Chromium logs ERROR:ffmpeg_common "Unsupported pixel format: -1" for valid yuv420p
+// HTML5 video (harmless; playback still works). Raise min log level to hide that spam.
+app.commandLine.appendSwitch('log-level', '3')
 try {
   const cacheDir = join(app.getPath('userData'), 'Cache')
   if (existsSync(cacheDir)) {
@@ -74,6 +78,11 @@ interface SharedComfyDraft {
   vaePath: string
   clipPath: string
   outputFolder: string
+  videoFormat: string
+  videoCodec: string
+  videoBitDepth: number
+  videoCrf: number
+  useSageAttention: boolean
 }
 
 interface ExtraLoraEntry {
@@ -105,6 +114,8 @@ interface VideoGenerateParams {
   loraHighStrength: number
   loraLowStrength: number
   useLightningLora: boolean
+  loraHighEnabled: boolean
+  loraLowEnabled: boolean
   extraLorasHigh: ExtraLoraEntry[]
   extraLorasLow: ExtraLoraEntry[]
   selectedImagePath: string
@@ -184,7 +195,12 @@ const DEFAULT_SHARED_COMFY: SharedComfyDraft = {
   wan22LoraFolder: '',
   vaePath: '',
   clipPath: '',
-  outputFolder: ''
+  outputFolder: '',
+  videoFormat: 'auto',
+  videoCodec: 'h264',
+  videoBitDepth: 8,
+  videoCrf: 23,
+  useSageAttention: true
 }
 
 const DEFAULT_VIDEO_PARAMS: VideoGenerateParams = {
@@ -209,6 +225,8 @@ const DEFAULT_VIDEO_PARAMS: VideoGenerateParams = {
   loraHighStrength: 0.8,
   loraLowStrength: 0.8,
   useLightningLora: true,
+  loraHighEnabled: true,
+  loraLowEnabled: true,
   extraLorasHigh: [],
   extraLorasLow: [],
   selectedImagePath: '',
@@ -330,6 +348,10 @@ function normalizeSharedComfy(raw: unknown): SharedComfyDraft {
     strField(o.speedLoraFolder) ||
     parentDirOf(strField(o.loraHighPath)) ||
     parentDirOf(strField(o.loraLowPath))
+  const format = strField(o.videoFormat, DEFAULT_SHARED_COMFY.videoFormat)
+  const codec = strField(o.videoCodec, DEFAULT_SHARED_COMFY.videoCodec)
+  const bitDepth = numField(o.videoBitDepth, DEFAULT_SHARED_COMFY.videoBitDepth)
+  const crf = numField(o.videoCrf, DEFAULT_SHARED_COMFY.videoCrf)
   return {
     comfyUiBatPath: strField(o.comfyUiBatPath),
     ditModelFolder,
@@ -339,7 +361,17 @@ function normalizeSharedComfy(raw: unknown): SharedComfyDraft {
     wan22LoraFolder: strField(o.wan22LoraFolder),
     vaePath: strField(o.vaePath),
     clipPath: strField(o.clipPath),
-    outputFolder: strField(o.outputFolder)
+    outputFolder: strField(o.outputFolder),
+    videoFormat: ['auto', 'mp4', 'webm', 'mkv'].includes(format) ? format : 'auto',
+    videoCodec: ['auto', 'h264', 'h265', 'av1', 'vp9', 'prores'].includes(codec)
+      ? codec
+      : 'h264',
+    videoBitDepth: bitDepth === 10 ? 10 : 8,
+    videoCrf: Math.min(51, Math.max(0, Math.round(crf))),
+    useSageAttention:
+      typeof o.useSageAttention === 'boolean'
+        ? o.useSageAttention
+        : DEFAULT_SHARED_COMFY.useSageAttention
   }
 }
 
@@ -384,7 +416,25 @@ function normalizeVideoParams(raw: unknown, defaults: VideoGenerateParams): Vide
       o.loraLowStrength,
       numField(o.loraStrength, defaults.loraLowStrength)
     ),
-    useLightningLora: Boolean(o.useLightningLora ?? defaults.useLightningLora),
+    loraHighEnabled:
+      typeof o.loraHighEnabled === 'boolean'
+        ? o.loraHighEnabled
+        : Boolean(o.useLightningLora ?? defaults.useLightningLora),
+    loraLowEnabled:
+      typeof o.loraLowEnabled === 'boolean'
+        ? o.loraLowEnabled
+        : Boolean(o.useLightningLora ?? defaults.useLightningLora),
+    useLightningLora: (() => {
+      const high =
+        typeof o.loraHighEnabled === 'boolean'
+          ? o.loraHighEnabled
+          : Boolean(o.useLightningLora ?? defaults.useLightningLora)
+      const low =
+        typeof o.loraLowEnabled === 'boolean'
+          ? o.loraLowEnabled
+          : Boolean(o.useLightningLora ?? defaults.useLightningLora)
+      return high || low
+    })(),
     extraLorasHigh: (() => {
       const hasSplit = Array.isArray(o.extraLorasHigh) || Array.isArray(o.extraLorasLow)
       if (hasSplit) return normalizeExtraLoras(o.extraLorasHigh)
@@ -444,8 +494,13 @@ function migrateGenerateSettings(parsed: Record<string, unknown>): {
         : null
     if (sc) {
       for (const key of Object.keys(DEFAULT_SHARED_COMFY) as (keyof SharedComfyDraft)[]) {
-        if (typeof sc[key] === 'string' && (sc[key] as string).length > 0) {
-          shared[key] = sc[key] as string
+        const v = sc[key]
+        if (typeof v === 'string' && v.length > 0) {
+          ;(shared as Record<string, unknown>)[key] = v
+        } else if (typeof v === 'number' && Number.isFinite(v)) {
+          ;(shared as Record<string, unknown>)[key] = v
+        } else if (typeof v === 'boolean') {
+          ;(shared as Record<string, unknown>)[key] = v
         }
       }
     }
@@ -800,12 +855,53 @@ app.whenReady().then(async () => {
     const parsed = new URL(request.url)
     let filePath = decodeURIComponent(parsed.pathname)
     if (filePath.startsWith('/')) filePath = filePath.slice(1)
+    const rangeHeader = request.headers.get('Range')
+    const mime = mimeForExt(extname(filePath))
     try {
       const buf = await readFile(filePath)
-      const mime = mimeForExt(extname(filePath))
+      const fileSize = buf.length
+
+      if (rangeHeader) {
+        const m = /bytes=(\d*)-(\d*)/.exec(rangeHeader)
+        if (m) {
+          let start = m[1] !== '' ? Number(m[1]) : 0
+          let end = m[2] !== '' ? Number(m[2]) : fileSize - 1
+          if (
+            Number.isNaN(start) ||
+            Number.isNaN(end) ||
+            start < 0 ||
+            end < start ||
+            start >= fileSize
+          ) {
+            return new Response(null, {
+              status: 416,
+              headers: {
+                'Content-Range': `bytes */${fileSize}`,
+                'Accept-Ranges': 'bytes'
+              }
+            })
+          }
+          end = Math.min(end, fileSize - 1)
+          const chunk = buf.subarray(start, end + 1)
+          return new Response(chunk, {
+            status: 206,
+            headers: {
+              'Content-Type': mime,
+              'Content-Length': String(chunk.length),
+              'Content-Range': `bytes ${start}-${end}/${fileSize}`,
+              'Accept-Ranges': 'bytes',
+              'Cache-Control': 'no-store'
+            }
+          })
+        }
+      }
+
       return new Response(buf, {
+        status: 200,
         headers: {
           'Content-Type': mime,
+          'Content-Length': String(fileSize),
+          'Accept-Ranges': 'bytes',
           'Cache-Control': 'no-store'
         }
       })
@@ -1041,6 +1137,7 @@ app.whenReady().then(async () => {
         ditFolders?: string[]
         vaeFolders?: string[]
         clipFolders?: string[]
+        useSageAttention?: boolean
       }
     ) => startComfyUi(opts)
   )
@@ -1272,6 +1369,28 @@ app.whenReady().then(async () => {
           ok: false,
           error: err instanceof Error ? err.message : String(err),
           videos: []
+        }
+      }
+    }
+  )
+
+  ipcMain.handle(
+    'gallery:probeVideo',
+    async (
+      _event,
+      opts: { path: string }
+    ): Promise<{ ok: boolean; error?: string; info?: VideoProbeInfo }> => {
+      const filePath = (opts?.path || '').trim()
+      if (!filePath) {
+        return { ok: false, error: 'Video path is empty' }
+      }
+      try {
+        const info = await probeVideoFile(filePath)
+        return { ok: true, info }
+      } catch (err) {
+        return {
+          ok: false,
+          error: err instanceof Error ? err.message : String(err)
         }
       }
     }

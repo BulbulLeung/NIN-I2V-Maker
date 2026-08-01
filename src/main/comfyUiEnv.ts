@@ -1,5 +1,5 @@
 import { app } from 'electron'
-import { existsSync } from 'fs'
+import { existsSync, readdirSync, statSync, mkdirSync, copyFileSync, rmSync } from 'fs'
 import { access, constants, mkdir, writeFile } from 'fs/promises'
 import { basename, dirname, join } from 'path'
 import { spawn, execFile, type ChildProcess } from 'child_process'
@@ -59,6 +59,68 @@ export function defaultComfyInstallPath(downloadFolder?: string): string {
 
 export function batPathForInstall(installRoot: string): string {
   return join(installRoot, 'run_i2vmaker.bat')
+}
+
+/** Bundled custom nodes live in resources/comfy_custom_nodes (dev + packaged). */
+function bundledCustomNodesRoot(): string {
+  if (app.isPackaged) {
+    return join(process.resourcesPath, 'comfy_custom_nodes')
+  }
+  return join(process.cwd(), 'resources', 'comfy_custom_nodes')
+}
+
+function copyDirRecursive(src: string, dest: string): void {
+  mkdirSync(dest, { recursive: true })
+  for (const name of readdirSync(src)) {
+    const from = join(src, name)
+    const to = join(dest, name)
+    const st = statSync(from)
+    if (st.isDirectory()) {
+      copyDirRecursive(from, to)
+    } else {
+      copyFileSync(from, to)
+    }
+  }
+}
+
+/**
+ * Install / refresh NIN I2V Maker ComfyUI custom nodes (direct multi-codec save).
+ * Returns a fingerprint so launch can restart Comfy when nodes change.
+ */
+export function ensureNinComfyCustomNodes(installRoot: string): { ok: boolean; fingerprint: string; error?: string } {
+  const srcRoot = bundledCustomNodesRoot()
+  if (!existsSync(srcRoot)) {
+    return { ok: false, fingerprint: '', error: `Bundled custom nodes missing: ${srcRoot}` }
+  }
+  const destRoot = join(installRoot, 'custom_nodes')
+  try {
+    mkdirSync(destRoot, { recursive: true })
+    const parts: string[] = []
+    for (const name of readdirSync(srcRoot)) {
+      const from = join(srcRoot, name)
+      if (!statSync(from).isDirectory()) continue
+      const to = join(destRoot, name)
+      if (existsSync(to)) {
+        rmSync(to, { recursive: true, force: true })
+      }
+      copyDirRecursive(from, to)
+      // Fingerprint node sources
+      const initPy = join(to, '__init__.py')
+      if (existsSync(initPy)) {
+        const st = statSync(initPy)
+        parts.push(`${name}:${st.size}:${st.mtimeMs}`)
+      } else {
+        parts.push(name)
+      }
+    }
+    return { ok: true, fingerprint: parts.sort().join('|') }
+  } catch (err) {
+    return {
+      ok: false,
+      fingerprint: '',
+      error: err instanceof Error ? err.message : String(err)
+    }
+  }
 }
 
 function resolvePythonExe(pythonPath?: string): string {
@@ -272,11 +334,16 @@ export async function probeComfyBat(
   return { ok: true, message: 'ComfyUI install looks valid', installRoot }
 }
 
-function buildBatContents(installRoot: string, pythonExe: string): string {
+function buildBatContents(
+  installRoot: string,
+  pythonExe: string,
+  useSageAttention = true
+): string {
   const py = pythonExe.replace(/"/g, '')
+  const sage = useSageAttention ? ' --use-sage-attention' : ''
   return `@echo off
 cd /d "${installRoot}"
-"${py}" main.py --disable-auto-launch --port ${COMFY_DEFAULT_PORT}
+"${py}" main.py --disable-auto-launch --port ${COMFY_DEFAULT_PORT}${sage}
 `
 }
 
@@ -461,6 +528,15 @@ export async function installComfyUi(opts: {
     onProgress?.({ stage: 'bat', message: 'Writing run_i2vmaker.bat…', pct: 85 })
     await writeFile(batPath, buildBatContents(installRoot, pythonExe), 'utf8')
 
+    const nodes = ensureNinComfyCustomNodes(installRoot)
+    if (!nodes.ok) {
+      onProgress?.({
+        stage: 'nodes',
+        message: `Custom nodes warning: ${nodes.error}`,
+        pct: 90
+      })
+    }
+
     const modelsRoot = opts.downloadFolder
       ? join(opts.downloadFolder.trim() || app.getPath('userData'), 'models')
       : join(app.getPath('userData'), 'models')
@@ -574,13 +650,17 @@ function extraPathsKey(opts: {
   ditFolders?: string[]
   vaeFolders?: string[]
   clipFolders?: string[]
+  useSageAttention?: boolean
+  customNodesFingerprint?: string
 }): string {
   return JSON.stringify({
     modelsRoot: (opts.modelsRoot || '').trim(),
     loraFolders: (opts.loraFolders || []).map((p) => p.trim()).filter(Boolean).sort(),
     ditFolders: (opts.ditFolders || []).map((p) => p.trim()).filter(Boolean).sort(),
     vaeFolders: (opts.vaeFolders || []).map((p) => p.trim()).filter(Boolean).sort(),
-    clipFolders: (opts.clipFolders || []).map((p) => p.trim()).filter(Boolean).sort()
+    clipFolders: (opts.clipFolders || []).map((p) => p.trim()).filter(Boolean).sort(),
+    useSageAttention: Boolean(opts.useSageAttention),
+    customNodesFingerprint: opts.customNodesFingerprint || ''
   })
 }
 
@@ -592,13 +672,19 @@ export async function startComfyUi(opts: {
   ditFolders?: string[]
   vaeFolders?: string[]
   clipFolders?: string[]
+  useSageAttention?: boolean
 }): Promise<{ ok: boolean; error?: string; alreadyRunning?: boolean }> {
   const probe = await probeComfyBat(opts.batPath)
   if (!probe.ok || !probe.installRoot) {
     return { ok: false, error: probe.message }
   }
   const installRoot = probe.installRoot
-  const pathKey = extraPathsKey(opts)
+  const useSageAttention = Boolean(opts.useSageAttention)
+  const nodes = ensureNinComfyCustomNodes(installRoot)
+  if (!nodes.ok) {
+    return { ok: false, error: nodes.error || 'Failed to install NIN ComfyUI custom nodes' }
+  }
+  const pathKey = extraPathsKey({ ...opts, useSageAttention, customNodesFingerprint: nodes.fingerprint })
   await writeExtraModelPaths(installRoot, {
     modelsRoot: opts.modelsRoot,
     loraFolders: opts.loraFolders,
@@ -612,7 +698,7 @@ export async function startComfyUi(opts: {
       lastComfyInstallRoot = installRoot
       return { ok: true, alreadyRunning: true }
     }
-    // Model search paths changed; ComfyUI only loads yaml at boot.
+    // Model search paths or SageAttention flag changed; ComfyUI only applies at boot.
     await stopComfyProcessOnly()
   } else if (comfyProc && !comfyProc.killed) {
     if (pathKey === lastExtraPathsKey) {
@@ -627,6 +713,17 @@ export async function startComfyUi(opts: {
   const pythonExe = resolvePythonExe(opts.pythonPath)
   await stopComfyProcessOnly()
 
+  // Keep run_i2vmaker.bat in sync with current SageAttention preference.
+  try {
+    await writeFile(
+      join(installRoot, 'run_i2vmaker.bat'),
+      buildBatContents(installRoot, pythonExe, useSageAttention),
+      'utf8'
+    )
+  } catch {
+    /* best-effort */
+  }
+
   // Repair mismatched torchaudio before spawn (common after ComfyUI requirements install).
   try {
     const preOk = await torchAudioLoads(pythonExe)
@@ -640,8 +737,11 @@ export async function startComfyUi(opts: {
     }
   }
 
+  const args = ['main.py', '--disable-auto-launch', '--port', String(COMFY_DEFAULT_PORT)]
+  if (useSageAttention) args.push('--use-sage-attention')
+
   return new Promise((resolve) => {
-    const child = spawn(pythonExe, ['main.py', '--disable-auto-launch', '--port', String(COMFY_DEFAULT_PORT)], {
+    const child = spawn(pythonExe, args, {
       cwd: installRoot,
       windowsHide: true,
       env: { ...process.env },

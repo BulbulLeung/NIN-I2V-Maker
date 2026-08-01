@@ -5,6 +5,9 @@
 
 import {
   framesFromSeconds,
+  type VideoSaveBitDepth,
+  type VideoSaveCodec,
+  type VideoSaveFormat,
   type Wan22VideoMode
 } from '../defaults/i2vGenerate'
 import {
@@ -78,6 +81,24 @@ export interface ComfyWan22LoopParams {
   uploadedEndImage?: string
   uploadedEndSubfolder?: string
   savePrefix?: string
+  videoFormat?: VideoSaveFormat
+  videoCodec?: VideoSaveCodec
+  videoBitDepth?: VideoSaveBitDepth
+  videoCrf?: number
+}
+
+export interface VideoNodeCaps {
+  /** Prefer NIN custom node — direct multi-codec encode from IMAGE frames. */
+  hasNinSaveVideo: boolean
+  createHasBitDepth: boolean
+  saveHasFormat: boolean
+  saveHasCodec: boolean
+  saveHasEncoding: boolean
+  saveHasCrf: boolean
+  /** When true, nested CRF uses codec.encoding / codec.encoding.crf keys. */
+  codecIsDynamicCombo: boolean
+  codecOptions: string[] | null
+  formatOptions: string[] | null
 }
 
 function clientId(): string {
@@ -144,18 +165,249 @@ function appendLoraChain(
   return current
 }
 
+function collectInputNames(nodeInfo: Record<string, unknown> | undefined): Set<string> {
+  const names = new Set<string>()
+  if (!nodeInfo || typeof nodeInfo !== 'object') return names
+  const input = nodeInfo.input as Record<string, unknown> | undefined
+  if (!input) return names
+  for (const group of ['required', 'optional'] as const) {
+    const block = input[group]
+    if (!block || typeof block !== 'object') continue
+    for (const key of Object.keys(block as Record<string, unknown>)) {
+      names.add(key)
+    }
+  }
+  return names
+}
+
+function extractComboOptions(
+  nodeInfo: Record<string, unknown> | undefined,
+  inputName: string
+): { options: string[] | null; isDynamicCombo: boolean; hasNestedEncoding: boolean; hasNestedCrf: boolean } {
+  const empty = {
+    options: null as string[] | null,
+    isDynamicCombo: false,
+    hasNestedEncoding: false,
+    hasNestedCrf: false
+  }
+  if (!nodeInfo || typeof nodeInfo !== 'object') return empty
+  const input = nodeInfo.input as Record<string, unknown> | undefined
+  if (!input) return empty
+  for (const group of ['required', 'optional'] as const) {
+    const block = input[group] as Record<string, unknown> | undefined
+    const spec = block?.[inputName]
+    if (!Array.isArray(spec) || spec.length === 0) continue
+    const first = spec[0]
+    // Classic COMBO: [["auto","h264",...], {..}]
+    if (Array.isArray(first) && first.every((x) => typeof x === 'string')) {
+      return {
+        options: first as string[],
+        isDynamicCombo: false,
+        hasNestedEncoding: false,
+        hasNestedCrf: false
+      }
+    }
+    // DynamicCombo V3: ["COMFY_DYNAMICCOMBO_V3", { options: [{ key, inputs }, ...] }]
+    if (typeof first === 'string' && /DYNAMICCOMBO/i.test(first)) {
+      const meta = spec[1] as { options?: { key?: string; inputs?: Record<string, unknown> }[] } | undefined
+      const keys =
+        meta?.options
+          ?.map((o) => (typeof o?.key === 'string' ? o.key : ''))
+          .filter(Boolean) || []
+      let hasNestedEncoding = false
+      let hasNestedCrf = false
+      for (const opt of meta?.options || []) {
+        const nested = opt.inputs
+        if (!nested || typeof nested !== 'object') continue
+        for (const section of ['required', 'optional'] as const) {
+          const sec = nested[section] as Record<string, unknown> | undefined
+          if (!sec) continue
+          if (sec.encoding) hasNestedEncoding = true
+          if (sec.crf) hasNestedCrf = true
+          // Nested DynamicCombo encoding may hold crf under its options
+          const encSpec = sec.encoding
+          if (Array.isArray(encSpec) && typeof encSpec[0] === 'string' && /DYNAMICCOMBO/i.test(encSpec[0])) {
+            hasNestedEncoding = true
+            const encMeta = encSpec[1] as { options?: { inputs?: Record<string, unknown> }[] } | undefined
+            for (const encOpt of encMeta?.options || []) {
+              const encInputs = encOpt.inputs
+              if (!encInputs || typeof encInputs !== 'object') continue
+              for (const eg of ['required', 'optional'] as const) {
+                const es = encInputs[eg] as Record<string, unknown> | undefined
+                if (es?.crf) hasNestedCrf = true
+              }
+            }
+          }
+        }
+      }
+      return {
+        options: keys.length > 0 ? keys : null,
+        isDynamicCombo: true,
+        hasNestedEncoding,
+        hasNestedCrf
+      }
+    }
+  }
+  return empty
+}
+
+export async function probeVideoNodeCaps(baseUrl: string): Promise<VideoNodeCaps> {
+  const defaults: VideoNodeCaps = {
+    hasNinSaveVideo: false,
+    createHasBitDepth: false,
+    saveHasFormat: true,
+    saveHasCodec: true,
+    saveHasEncoding: false,
+    saveHasCrf: false,
+    codecIsDynamicCombo: false,
+    codecOptions: null,
+    formatOptions: null
+  }
+  try {
+    const base = baseUrl.replace(/\/$/, '')
+    const [ninRes, createRes, saveRes] = await Promise.all([
+      comfyHttp(`${base}/object_info/NINI2VSaveVideo`, { timeoutMs: 15_000 }),
+      comfyHttp(`${base}/object_info/CreateVideo`, { timeoutMs: 15_000 }),
+      comfyHttp(`${base}/object_info/SaveVideo`, { timeoutMs: 15_000 })
+    ])
+    if (ninRes.ok && ninRes.text) {
+      try {
+        const parsed = JSON.parse(ninRes.text) as Record<string, unknown>
+        if (parsed.NINI2VSaveVideo) {
+          defaults.hasNinSaveVideo = true
+          const info = parsed.NINI2VSaveVideo as Record<string, unknown>
+          const codecInfo = extractComboOptions(info, 'codec')
+          const formatInfo = extractComboOptions(info, 'format')
+          defaults.codecOptions = codecInfo.options
+          defaults.formatOptions = formatInfo.options
+        }
+      } catch {
+        /* ignore */
+      }
+    }
+    if (createRes.ok && createRes.text) {
+      const parsed = JSON.parse(createRes.text) as Record<string, Record<string, unknown>>
+      const names = collectInputNames(parsed.CreateVideo)
+      defaults.createHasBitDepth = names.has('bit_depth')
+    }
+    if (!defaults.hasNinSaveVideo && saveRes.ok && saveRes.text) {
+      const parsed = JSON.parse(saveRes.text) as Record<string, Record<string, unknown>>
+      const info = parsed.SaveVideo
+      const names = collectInputNames(info)
+      defaults.saveHasFormat = names.has('format') || defaults.saveHasFormat
+      defaults.saveHasCodec = names.has('codec') || defaults.saveHasCodec
+      const codecInfo = extractComboOptions(info, 'codec')
+      const formatInfo = extractComboOptions(info, 'format')
+      defaults.codecOptions = codecInfo.options
+      defaults.formatOptions = formatInfo.options
+      defaults.codecIsDynamicCombo = codecInfo.isDynamicCombo
+      defaults.saveHasEncoding =
+        names.has('encoding') || names.has('codec.encoding') || codecInfo.hasNestedEncoding
+      defaults.saveHasCrf =
+        names.has('crf') || names.has('codec.encoding.crf') || codecInfo.hasNestedCrf
+    }
+  } catch {
+    /* use defaults */
+  }
+  return defaults
+}
+
+function pickFromOptions(wanted: string, options: string[] | null, fallbacks: string[]): string {
+  if (!options || options.length === 0) {
+    if (fallbacks.includes(wanted)) return wanted
+    return fallbacks[0] || wanted
+  }
+  if (options.includes(wanted)) return wanted
+  for (const fb of fallbacks) {
+    if (options.includes(fb)) return fb
+  }
+  return options[0]
+}
+
+function pickCodec(p: ComfyWan22LoopParams, caps?: VideoNodeCaps): string {
+  let wanted = (p.videoCodec || 'h264').trim() || 'h264'
+  if (wanted === 'auto') wanted = 'h264'
+  if (caps?.hasNinSaveVideo) {
+    return pickFromOptions(wanted, caps.codecOptions, ['h264', 'h265', 'av1', 'vp9', 'prores'])
+  }
+  return pickFromOptions(wanted, caps?.codecOptions ?? null, ['h264', 'auto'])
+}
+
+function pickFormat(p: ComfyWan22LoopParams, caps?: VideoNodeCaps): string {
+  const wanted = (p.videoFormat || 'auto').trim() || 'auto'
+  if (caps?.hasNinSaveVideo) {
+    return pickFromOptions(wanted, caps.formatOptions, ['auto', 'mp4', 'webm', 'mkv'])
+  }
+  return pickFromOptions(wanted, caps?.formatOptions ?? null, ['auto', 'mp4'])
+}
+
+function buildNinSaveVideoInputs(p: ComfyWan22LoopParams, caps?: VideoNodeCaps): Record<string, unknown> {
+  const format = pickFormat(p, caps)
+  const codec = pickCodec(p, caps)
+  const crf = Math.min(63, Math.max(0, Math.round(p.videoCrf ?? 23)))
+  return {
+    images: [WAN22_NODE.vaeDecode, 0],
+    fps: p.fps,
+    filename_prefix: p.savePrefix || prefixForMode(p.mode),
+    format,
+    codec,
+    bit_depth: p.videoBitDepth === 10 ? 10 : 8,
+    crf
+  }
+}
+
+function buildCreateVideoInputs(
+  p: ComfyWan22LoopParams,
+  caps?: VideoNodeCaps
+): Record<string, unknown> {
+  const inputs: Record<string, unknown> = {
+    images: [WAN22_NODE.vaeDecode, 0],
+    fps: p.fps
+  }
+  if (caps?.createHasBitDepth) {
+    inputs.bit_depth = p.videoBitDepth === 10 ? 10 : 8
+  }
+  return inputs
+}
+
+function buildSaveVideoInputs(
+  p: ComfyWan22LoopParams,
+  caps?: VideoNodeCaps
+): Record<string, unknown> {
+  const format = pickFormat(p, caps)
+  const codec = pickCodec(p, caps)
+  const crf = Math.min(51, Math.max(0, Math.round(p.videoCrf ?? 23)))
+  const inputs: Record<string, unknown> = {
+    video: [WAN22_NODE.createVideo, 0],
+    filename_prefix: p.savePrefix || prefixForMode(p.mode)
+  }
+  if (!caps || caps.saveHasFormat) inputs.format = format
+  if (!caps || caps.saveHasCodec) inputs.codec = codec
+
+  const wantCrf = codec === 'h264'
+  if (wantCrf && caps && (caps.saveHasCrf || caps.saveHasEncoding)) {
+    if (caps.codecIsDynamicCombo) {
+      inputs['codec.encoding'] = 're-encode'
+      inputs['codec.encoding.crf'] = crf
+    } else {
+      if (caps.saveHasEncoding) inputs.encoding = 're-encode'
+      inputs.crf = crf
+    }
+  }
+  return inputs
+}
+
 /**
  * Build API prompt graph aligned with Wan22 Loop generation (dual UNET + dual KSampler).
  * Post-processing (interp / upscale / mini meme) is omitted by design.
  */
-export function buildWan22LoopWorkflow(p: ComfyWan22LoopParams): Record<string, unknown> {
+export function buildWan22LoopWorkflow(
+  p: ComfyWan22LoopParams,
+  caps?: VideoNodeCaps
+): Record<string, unknown> {
   const legacyStrength = p.loraStrength ?? 0.8
   const highStrength = p.loraHighStrength ?? legacyStrength
   const lowStrength = p.loraLowStrength ?? legacyStrength
-  const useSpeedLora =
-    Boolean(p.useLightningLora) &&
-    Boolean((p.loraHighName || '').trim()) &&
-    Boolean((p.loraLowName || '').trim())
   const mapExtras = (list: { name: string; strength: number }[] | undefined) =>
     (list || [])
       .map((e) => ({
@@ -260,22 +512,22 @@ export function buildWan22LoopWorkflow(p: ComfyWan22LoopParams): Record<string, 
         samples: [WAN22_NODE.samplerLow, 0],
         vae: [WAN22_NODE.vae, 0]
       }
-    },
-    [WAN22_NODE.createVideo]: {
+    }
+  }
+
+  if (caps?.hasNinSaveVideo) {
+    graph[WAN22_NODE.saveVideo] = {
+      class_type: 'NINI2VSaveVideo',
+      inputs: buildNinSaveVideoInputs(p, caps)
+    }
+  } else {
+    graph[WAN22_NODE.createVideo] = {
       class_type: 'CreateVideo',
-      inputs: {
-        images: [WAN22_NODE.vaeDecode, 0],
-        fps: p.fps
-      }
-    },
-    [WAN22_NODE.saveVideo]: {
+      inputs: buildCreateVideoInputs(p, caps)
+    }
+    graph[WAN22_NODE.saveVideo] = {
       class_type: 'SaveVideo',
-      inputs: {
-        video: [WAN22_NODE.createVideo, 0],
-        filename_prefix: p.savePrefix || prefixForMode(p.mode),
-        format: 'auto',
-        codec: 'auto'
-      }
+      inputs: buildSaveVideoInputs(p, caps)
     }
   }
 
@@ -292,12 +544,10 @@ export function buildWan22LoopWorkflow(p: ComfyWan22LoopParams): Record<string, 
     }
   }
 
-  const speedHigh = useSpeedLora
-    ? { name: (p.loraHighName || '').trim(), strength: highStrength }
-    : null
-  const speedLow = useSpeedLora
-    ? { name: (p.loraLowName || '').trim(), strength: lowStrength }
-    : null
+  const speedHighName = (p.loraHighName || '').trim()
+  const speedLowName = (p.loraLowName || '').trim()
+  const speedHigh = speedHighName ? { name: speedHighName, strength: highStrength } : null
+  const speedLow = speedLowName ? { name: speedLowName, strength: lowStrength } : null
 
   const highModelNode = appendLoraChain(
     graph,
@@ -392,7 +642,26 @@ async function waitForPromptDone(
         if (entry) {
           const statusStr = entry.status?.status_str
           if (statusStr === 'error') {
-            throw new Error('ComfyUI reported an error while generating video')
+            const statusFull = entry.status as Record<string, unknown> | undefined
+            const messages = statusFull?.messages
+            let exceptionMessage = ''
+            let nodeId = ''
+            let nodeType = ''
+            if (Array.isArray(messages)) {
+              for (const m of messages) {
+                if (!Array.isArray(m) || m[0] !== 'execution_error') continue
+                const detail = m[1] as Record<string, unknown> | undefined
+                if (!detail) continue
+                exceptionMessage = String(detail.exception_message || detail.message || '')
+                nodeId = String(detail.node_id ?? '')
+                nodeType = String(detail.node_type ?? '')
+              }
+            }
+            const detail =
+              exceptionMessage || nodeType
+                ? ` (${nodeType || nodeId}: ${exceptionMessage || 'unknown'})`
+                : ''
+            throw new Error(`ComfyUI reported an error while generating video${detail}`)
           }
           if (entry.status?.completed || entry.outputs) {
             return entry as unknown as Record<string, unknown>
@@ -458,7 +727,7 @@ function describeNode(nodeId: string | null | undefined): string {
     [WAN22_NODE.samplerLow]: 'Low-noise sampling',
     [WAN22_NODE.vaeDecode]: 'VAE decode',
     [WAN22_NODE.createVideo]: 'Create video',
-    [WAN22_NODE.saveVideo]: 'Save video'
+    [WAN22_NODE.saveVideo]: 'Save video (direct encode)'
   }
   if (map[nodeId]) return map[nodeId]
   if (nodeId.startsWith('extra_h_')) return `Apply extra LoRA (high #${nodeId.slice('extra_h_'.length)})`
@@ -578,7 +847,13 @@ export async function generateWan22LoopWithComfy(
   const length = framesFromSeconds(params.seconds, params.fps)
 
   onProgress?.('Building Wan2.2 workflow…')
-  const workflow = buildWan22LoopWorkflow({ ...params, seed })
+  const caps = await probeVideoNodeCaps(baseUrl)
+  if (!caps.hasNinSaveVideo) {
+    throw new Error(
+      'NINI2VSaveVideo custom node not loaded. Stop ComfyUI and Start again so NIN custom nodes can install (direct H265/AV1/VP9/ProRes encode).'
+    )
+  }
+  const workflow = buildWan22LoopWorkflow({ ...params, seed }, caps)
   const cid = clientId()
   const promptIdRef = { current: '' }
   const liveProgressAt = { current: 0 }

@@ -62,6 +62,36 @@ interface GalleryVideo {
   mtimeMs: number
 }
 
+interface VideoMeta {
+  name: string
+  sizeBytes: number
+  width: number | null
+  height: number | null
+  codec: string | null
+  bitDepth: number | null
+  container: string | null
+}
+
+function formatFileSize(bytes: number): string {
+  if (bytes < 1024) return `${bytes} B`
+  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`
+  if (bytes < 1024 * 1024 * 1024) return `${(bytes / (1024 * 1024)).toFixed(1)} MB`
+  return `${(bytes / (1024 * 1024 * 1024)).toFixed(2)} GB`
+}
+
+function formatVideoMetaLine(meta: VideoMeta): string {
+  const parts: string[] = []
+  if (meta.width && meta.height) parts.push(`${meta.width}×${meta.height}`)
+  if (meta.sizeBytes > 0) parts.push(formatFileSize(meta.sizeBytes))
+  if (meta.codec) {
+    parts.push(meta.codec)
+    if (meta.bitDepth) parts.push(`${meta.bitDepth}bit`)
+  } else if (meta.container) {
+    parts.push(meta.container)
+  }
+  return parts.join(' · ')
+}
+
 const SAMPLERS = [
   'euler',
   'euler_ancestral',
@@ -116,8 +146,10 @@ export function GenerateView({
   const [comfyOnline, setComfyOnline] = useState(false)
   const [comfyBusy, setComfyBusy] = useState(false)
   const [generating, setGenerating] = useState(false)
+  const [generateElapsedSec, setGenerateElapsedSec] = useState(0)
   const [videos, setVideos] = useState<GalleryVideo[]>([])
   const [selectedVideo, setSelectedVideo] = useState<string | null>(null)
+  const [videoMeta, setVideoMeta] = useState<VideoMeta | null>(null)
   const [monitorDevice, setMonitorDevice] = useState('cuda:0')
 
   const [resolvedSize, setResolvedSize] = useState<{ width: number; height: number }>({
@@ -278,6 +310,7 @@ export function GenerateView({
     if (!folder) {
       setVideos([])
       setSelectedVideo(null)
+      setVideoMeta(null)
       return
     }
     try {
@@ -300,6 +333,51 @@ export function GenerateView({
   useEffect(() => {
     void refreshGallery()
   }, [sharedComfy.outputFolder, refreshGallery])
+
+  useEffect(() => {
+    if (!selectedVideo) {
+      setVideoMeta(null)
+      return
+    }
+    let cancelled = false
+    void (async () => {
+      try {
+        const res = await window.api.galleryProbeVideo({ path: selectedVideo })
+        if (cancelled) return
+        if (res.ok && res.info) {
+          setVideoMeta({
+            name: res.info.name,
+            sizeBytes: res.info.sizeBytes,
+            width: res.info.width,
+            height: res.info.height,
+            codec: res.info.codec,
+            bitDepth: res.info.bitDepth,
+            container: res.info.container
+          })
+        } else {
+          const fallback = videos.find((v) => v.path === selectedVideo)
+          setVideoMeta(
+            fallback
+              ? {
+                  name: fallback.name,
+                  sizeBytes: 0,
+                  width: null,
+                  height: null,
+                  codec: null,
+                  bitDepth: null,
+                  container: null
+                }
+              : null
+          )
+        }
+      } catch {
+        if (!cancelled) setVideoMeta(null)
+      }
+    })()
+    return () => {
+      cancelled = true
+    }
+  }, [selectedVideo, videos])
 
   useEffect(() => {
     let cancelled = false
@@ -352,7 +430,8 @@ export function GenerateView({
         ditFolders,
         vaeFolders,
         clipFolders,
-        loraFolders
+        loraFolders,
+        useSageAttention: s.useSageAttention
       })
       if (!result.ok) {
         onStatus(result.error || 'Failed to start ComfyUI', true)
@@ -466,15 +545,9 @@ export function GenerateView({
       onStatus('Set Output folder in Settings → ComfyUI', true)
       return
     }
-    if (
-      (Boolean(d.loraHighPath.trim()) && !d.loraLowPath.trim()) ||
-      (!d.loraHighPath.trim() && Boolean(d.loraLowPath.trim()))
-    ) {
-      onStatus('Speed LoRA: set both high and low, or choose -NONE- for both', true)
-      return
-    }
-
-    const useSpeedLora = Boolean(d.loraHighPath.trim() && d.loraLowPath.trim())
+    const speedHighOn = Boolean(d.loraHighEnabled && d.loraHighPath.trim())
+    const speedLowOn = Boolean(d.loraLowEnabled && d.loraLowPath.trim())
+    const useSpeedLora = speedHighOn || speedLowOn
     const lengthFrames = framesFromSeconds(d.seconds, d.fps)
     const modeLabel =
       panel === 'loop'
@@ -498,6 +571,7 @@ export function GenerateView({
     abortRef.current?.abort()
     const ac = new AbortController()
     abortRef.current = ac
+    setGenerateElapsedSec(0)
     setGenerating(true)
     const startedAt = Date.now()
 
@@ -508,6 +582,10 @@ export function GenerateView({
       if (m <= 0) return `${s}s`
       return `${m}m ${s}s`
     }
+
+    const elapsedTimer = window.setInterval(() => {
+      setGenerateElapsedSec(Math.max(0, Math.floor((Date.now() - startedAt) / 1000)))
+    }, 250)
 
     try {
       report(
@@ -561,8 +639,8 @@ export function GenerateView({
           lowDitName: basenamePath(s.lowDitPath),
           vaeName: basenamePath(s.vaePath),
           clipName: basenamePath(s.clipPath),
-          loraHighName: useSpeedLora ? basenamePath(d.loraHighPath) : undefined,
-          loraLowName: useSpeedLora ? basenamePath(d.loraLowPath) : undefined,
+          loraHighName: speedHighOn ? basenamePath(d.loraHighPath) : undefined,
+          loraLowName: speedLowOn ? basenamePath(d.loraLowPath) : undefined,
           loraHighStrength: d.loraHighStrength,
           loraLowStrength: d.loraLowStrength,
           useLightningLora: useSpeedLora,
@@ -586,7 +664,11 @@ export function GenerateView({
             ? mode === 'wanfun_inpaint'
               ? 'loop/Wan2.2_loop_inpaint'
               : 'loop/Wan2.2_loop'
-            : undefined
+            : undefined,
+          videoFormat: s.videoFormat,
+          videoCodec: s.videoCodec,
+          videoBitDepth: s.videoBitDepth,
+          videoCrf: s.videoCrf
         },
         {
           signal: ac.signal,
@@ -639,8 +721,10 @@ export function GenerateView({
       }
       onStatus(msg, true)
     } finally {
+      window.clearInterval(elapsedTimer)
       if (abortRef.current === ac) abortRef.current = null
       setGenerating(false)
+      setGenerateElapsedSec(0)
     }
   }
 
@@ -699,23 +783,52 @@ export function GenerateView({
   const speedLoraSelect = (
     label: string,
     key: 'loraHighPath' | 'loraLowPath',
-    strengthKey: 'loraHighStrength' | 'loraLowStrength'
+    strengthKey: 'loraHighStrength' | 'loraLowStrength',
+    enabledKey: 'loraHighEnabled' | 'loraLowEnabled'
   ) => {
     const value = String(draft[key] ?? '')
     const known = speedLoraModels.some((m) => m.path === value)
+    const enabled = Boolean(draft[enabledKey])
     const onPick = (nextPath: string) => {
       const otherKey = key === 'loraHighPath' ? 'loraLowPath' : 'loraHighPath'
+      const otherEnabledKey =
+        enabledKey === 'loraHighEnabled' ? 'loraLowEnabled' : 'loraHighEnabled'
       const otherPath = String(draft[otherKey] ?? '').trim()
-      const bothOn = Boolean(nextPath.trim() && otherPath)
+      const otherEnabled = Boolean(draft[otherEnabledKey])
+      const thisOn = enabled && Boolean(nextPath.trim())
+      const otherOn = otherEnabled && Boolean(otherPath)
       const next: Partial<VideoGenerateParams> = {
         [key]: nextPath,
-        useLightningLora: bothOn
+        useLightningLora: thisOn || otherOn
       }
-      if (bothOn) {
+      if (thisOn && otherOn) {
         if (draft.steps === 20) next.steps = 8
         if (draft.cfg === 3.5) next.cfg = 1
         if (draft.cfgHigh === 3.5) next.cfgHigh = 5
-      } else if (!nextPath.trim() || !otherPath) {
+      } else if (!thisOn && !otherOn) {
+        if (draft.steps === 8 || draft.steps === 4) next.steps = 20
+        if (draft.cfg === 1) next.cfg = 3.5
+      }
+      patchDraft(next)
+    }
+    const toggleEnabled = () => {
+      const nextOn = !enabled
+      const otherKey = key === 'loraHighPath' ? 'loraLowPath' : 'loraHighPath'
+      const otherEnabledKey =
+        enabledKey === 'loraHighEnabled' ? 'loraLowEnabled' : 'loraHighEnabled'
+      const otherPath = String(draft[otherKey] ?? '').trim()
+      const otherEnabled = Boolean(draft[otherEnabledKey])
+      const thisActive = nextOn && Boolean(value.trim())
+      const otherActive = otherEnabled && Boolean(otherPath)
+      const next: Partial<VideoGenerateParams> = {
+        [enabledKey]: nextOn,
+        useLightningLora: thisActive || otherActive
+      }
+      if (thisActive && otherActive) {
+        if (draft.steps === 20) next.steps = 8
+        if (draft.cfg === 3.5) next.cfg = 1
+        if (draft.cfgHigh === 3.5) next.cfgHigh = 5
+      } else if (!thisActive && !otherActive) {
         if (draft.steps === 8 || draft.steps === 4) next.steps = 20
         if (draft.cfg === 1) next.cfg = 3.5
       }
@@ -730,12 +843,24 @@ export function GenerateView({
     return (
       <label className="field">
         <span>{label}</span>
-        <div className="generate-speed-lora-row">
+        <div className={`generate-speed-lora-row${enabled ? '' : ' is-off'}`}>
+          <button
+            type="button"
+            className={`lora-switch${enabled ? ' is-on' : ''}`}
+            role="switch"
+            aria-checked={enabled}
+            aria-label={`${label} on/off`}
+            title={enabled ? 'On' : 'Off'}
+            onClick={toggleEnabled}
+          >
+            <span className="lora-switch-knob" />
+          </button>
           <SearchableSelect
             value={known ? value : value ? value : ''}
             options={options}
             emptyLabel="-NONE-"
             placeholder="-NONE-"
+            disabled={!enabled}
             onChange={onPick}
           />
           <input
@@ -746,7 +871,7 @@ export function GenerateView({
             min={0}
             max={2}
             title="Weight"
-            disabled={!value}
+            disabled={!enabled || !value}
             onChange={(e) => patchDraft({ [strengthKey]: Number(e.target.value) })}
           />
         </div>
@@ -808,8 +933,18 @@ export function GenerateView({
               {ditModelSelect('High noise DiT', 'highDitPath')}
               {ditModelSelect('Low noise DiT', 'lowDitPath')}
 
-              {speedLoraSelect('Speed LoRA (high)', 'loraHighPath', 'loraHighStrength')}
-              {speedLoraSelect('Speed LoRA (low)', 'loraLowPath', 'loraLowStrength')}
+              {speedLoraSelect(
+                'Speed LoRA (high)',
+                'loraHighPath',
+                'loraHighStrength',
+                'loraHighEnabled'
+              )}
+              {speedLoraSelect(
+                'Speed LoRA (low)',
+                'loraLowPath',
+                'loraLowStrength',
+                'loraLowEnabled'
+              )}
               {!sharedComfy.speedLoraFolder.trim() ? (
                 <p className="field-hint">Set Speed LoRA folder in Settings to list models.</p>
               ) : null}
@@ -833,57 +968,6 @@ export function GenerateView({
                 )}
               </div>
 
-              <label className="field">
-                <span>Resolution</span>
-                <select
-                  value={
-                    isResolutionPreset(draft.resolutionPreset)
-                      ? draft.resolutionPreset
-                      : DEFAULT_RESOLUTION_PRESET
-                  }
-                  onChange={(e) => patchDraft({ resolutionPreset: e.target.value })}
-                >
-                  {RESOLUTION_PRESET_OPTIONS.map((p) => (
-                    <option key={p} value={p}>
-                      {p}
-                    </option>
-                  ))}
-                </select>
-              </label>
-
-              <label className="field checkbox-field">
-                <input
-                  type="checkbox"
-                  checked={draft.scaleFromImage}
-                  onChange={(e) => patchDraft({ scaleFromImage: e.target.checked })}
-                />
-                <span>Scale from start image aspect</span>
-              </label>
-
-              {!draft.scaleFromImage ? (
-                <label className="field">
-                  <span>Aspect</span>
-                  <select
-                    value={
-                      isAspectPreset(draft.aspectPreset)
-                        ? draft.aspectPreset
-                        : DEFAULT_ASPECT_PRESET
-                    }
-                    onChange={(e) => patchDraft({ aspectPreset: e.target.value })}
-                  >
-                    {ASPECT_PRESET_OPTIONS.map((a) => (
-                      <option key={a} value={a}>
-                        {a}
-                      </option>
-                    ))}
-                  </select>
-                </label>
-              ) : null}
-
-              <p className="field-hint">
-                Size: {resolvedSize.width}×{resolvedSize.height} (WAN Div32, like workflow)
-              </p>
-
               <div className="field-row-grid">
                 {numField('Seconds', 'seconds', { step: 0.5, min: 0.5, max: 60 })}
                 {numField('FPS', 'fps', { min: 1, max: 60 })}
@@ -895,14 +979,28 @@ export function GenerateView({
                 {numField('Steps', 'steps', { min: 1, max: 100 })}
                 {numField('Refiner step', 'refinerStep', { min: 1, max: 100 })}
               </div>
-              <div className="field-row-grid">
+              <div className="field-row-grid field-row-grid-3">
                 {numField('CFG-HIGH', 'cfgHigh', { step: 0.1, min: 0, max: 30 })}
                 {numField('CFG (low)', 'cfg', { step: 0.1, min: 0, max: 30 })}
-              </div>
-              <div className="field-row-grid">
-                {numField('Seed (−1 = random)', 'seed')}
                 {numField('Shift', 'shift', { step: 0.1, min: 0, max: 20 })}
               </div>
+              <label className="field">
+                <span>Seed (−1 = random)</span>
+                <div className="field-row">
+                  <input
+                    type="number"
+                    value={Number(draft.seed)}
+                    onChange={(e) => patchDraft({ seed: Number(e.target.value) })}
+                  />
+                  <button
+                    type="button"
+                    title="Set seed to −1 (random)"
+                    onClick={() => patchDraft({ seed: -1 })}
+                  >
+                    Random
+                  </button>
+                </div>
+              </label>
 
               <div className="field-row-grid">
                 <label className="field">
@@ -941,6 +1039,64 @@ export function GenerateView({
             </div>
 
             <div className="generate-settings-col generate-settings-col-right">
+              <label className="field">
+                <span>Resolution</span>
+                <select
+                  value={
+                    isResolutionPreset(draft.resolutionPreset)
+                      ? draft.resolutionPreset
+                      : DEFAULT_RESOLUTION_PRESET
+                  }
+                  onChange={(e) => patchDraft({ resolutionPreset: e.target.value })}
+                >
+                  {RESOLUTION_PRESET_OPTIONS.map((p) => (
+                    <option key={p} value={p}>
+                      {p}
+                    </option>
+                  ))}
+                </select>
+              </label>
+
+              <div
+                className={`generate-aspect-toggle lora-toggle${draft.scaleFromImage ? ' is-on' : ''}`}
+              >
+                <span className="lora-toggle-label">Use Image Aspect</span>
+                <button
+                  type="button"
+                  className="lora-switch"
+                  role="switch"
+                  aria-checked={draft.scaleFromImage}
+                  aria-label="Use Image Aspect"
+                  onClick={() => patchDraft({ scaleFromImage: !draft.scaleFromImage })}
+                >
+                  <span className="lora-switch-knob" />
+                </button>
+              </div>
+
+              {!draft.scaleFromImage ? (
+                <label className="field">
+                  <span>Aspect</span>
+                  <select
+                    value={
+                      isAspectPreset(draft.aspectPreset)
+                        ? draft.aspectPreset
+                        : DEFAULT_ASPECT_PRESET
+                    }
+                    onChange={(e) => patchDraft({ aspectPreset: e.target.value })}
+                  >
+                    {ASPECT_PRESET_OPTIONS.map((a) => (
+                      <option key={a} value={a}>
+                        {a}
+                      </option>
+                    ))}
+                  </select>
+                </label>
+              ) : null}
+
+              <p className="field-hint">
+                Size: {resolvedSize.width}×{resolvedSize.height} (WAN Div32, like workflow)
+              </p>
+
               <div className="field">
                 <span>
                   {panel === 'loop' ? 'Loop frame (Prompt images)' : 'Start frame (Prompt images)'}
@@ -1049,7 +1205,7 @@ export function GenerateView({
                 className="danger lora-test-generate-btn"
                 onClick={() => void abortGenerate()}
               >
-                Abort
+                Abort · {generateElapsedSec} Sec
               </button>
             ) : (
               <button
@@ -1088,13 +1244,36 @@ export function GenerateView({
 
           <div className="generate-video-player">
             {selectedVideo ? (
-              <video
-                key={selectedVideo}
-                src={window.api.toLocalUrl(selectedVideo)}
-                controls
-                autoPlay
-                loop
-              />
+              <>
+                <video
+                  key={selectedVideo}
+                  src={window.api.toLocalUrl(selectedVideo)}
+                  controls
+                  autoPlay
+                  loop
+                  onLoadedMetadata={(e) => {
+                    const el = e.currentTarget
+                    const w = el.videoWidth
+                    const h = el.videoHeight
+                    if (!w || !h) return
+                    setVideoMeta((prev) => {
+                      if (!prev) return prev
+                      if (prev.width && prev.height) return prev
+                      return { ...prev, width: w, height: h }
+                    })
+                  }}
+                />
+                {videoMeta ? (
+                  <div className="generate-video-meta">
+                    <div className="generate-video-meta-name" title={videoMeta.name}>
+                      {videoMeta.name}
+                    </div>
+                    <div className="generate-video-meta-details">
+                      {formatVideoMetaLine(videoMeta)}
+                    </div>
+                  </div>
+                ) : null}
+              </>
             ) : (
               <div className="generate-video-player-empty">
                 {videos.length > 0
@@ -1123,6 +1302,7 @@ export function GenerateView({
                     muted
                     loop
                     playsInline
+                    preload="metadata"
                     onMouseEnter={(e) => {
                       void e.currentTarget.play().catch(() => undefined)
                     }}
@@ -1131,7 +1311,6 @@ export function GenerateView({
                       e.currentTarget.currentTime = 0
                     }}
                   />
-                  <span className="i2v-gallery-name">{v.name}</span>
                 </button>
               ))
             )}

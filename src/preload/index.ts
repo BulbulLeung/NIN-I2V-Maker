@@ -27,6 +27,11 @@ export interface SharedComfyDraft {
   vaePath: string
   clipPath: string
   outputFolder: string
+  videoFormat: string
+  videoCodec: string
+  videoBitDepth: number
+  videoCrf: number
+  useSageAttention: boolean
 }
 
 export interface ExtraLoraEntry {
@@ -58,6 +63,8 @@ export interface VideoGenerateParams {
   loraHighStrength: number
   loraLowStrength: number
   useLightningLora: boolean
+  loraHighEnabled: boolean
+  loraLowEnabled: boolean
   extraLorasHigh: ExtraLoraEntry[]
   extraLorasLow: ExtraLoraEntry[]
   selectedImagePath: string
@@ -114,6 +121,17 @@ export interface GalleryVideoItem {
   path: string
   name: string
   mtimeMs: number
+}
+
+export interface GalleryVideoProbeInfo {
+  path: string
+  name: string
+  sizeBytes: number
+  width: number | null
+  height: number | null
+  codec: string | null
+  bitDepth: number | null
+  container: string | null
 }
 
 const api = {
@@ -244,6 +262,7 @@ const api = {
     ditFolders?: string[]
     vaeFolders?: string[]
     clipFolders?: string[]
+    useSageAttention?: boolean
   }): Promise<{ ok: boolean; error?: string; alreadyRunning?: boolean }> =>
     ipcRenderer.invoke('comfy:start', opts),
 
@@ -339,6 +358,14 @@ const api = {
     error?: string
     videos: GalleryVideoItem[]
   }> => ipcRenderer.invoke('gallery:listVideos', opts),
+
+  galleryProbeVideo: (opts: {
+    path: string
+  }): Promise<{
+    ok: boolean
+    error?: string
+    info?: GalleryVideoProbeInfo
+  }> => ipcRenderer.invoke('gallery:probeVideo', opts),
 
   toLocalUrl: (filePath: string): string => {
     const normalized = filePath.replace(/\\/g, '/')
