@@ -703,8 +703,9 @@ async function waitForPromptDone(
       }
     }
     const liveAt = liveProgressAt?.current ?? 0
-    // Don't overwrite live sampler step updates with a generic wait message.
-    if (Date.now() - liveAt > 2500) {
+    // Only show the generic wait message before any live WS progress arrives.
+    // After "Generating video — step x/x" (or other node progress), never overwrite it.
+    if (liveAt < start) {
       const elapsedSec = Math.floor((Date.now() - start) / 1000)
       report(`Preparing models / encoding… ${elapsedSec}s`)
     }

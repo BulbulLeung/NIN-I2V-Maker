@@ -8,7 +8,7 @@ export interface ImageItem {
 
 export type TranslationProvider = 'lmstudio' | 'ollama'
 export type UiGpuMode = 'auto' | 'software' | 'onboard'
-export type ActiveView = 'prompt' | 'i2v' | 'flf2v' | 'loop'
+export type ActiveView = 'prompt' | 'i2v' | 'flf2v' | 'loop' | 'upscale'
 export type FlfMode = 'flf2v' | 'wanfun_inpaint'
 
 export interface PromptPreset {
@@ -24,6 +24,8 @@ export interface SharedComfyDraft {
   lowDitPath: string
   speedLoraFolder: string
   wan22LoraFolder: string
+  upscaleModelFolder: string
+  frameInterpModelFolder: string
   vaePath: string
   clipPath: string
   outputFolder: string
@@ -82,6 +84,14 @@ export interface Flf2vGenerateDraft extends VideoGenerateParams {
 
 export type LoopGenerateDraft = Flf2vGenerateDraft
 
+export interface UpscaleGenerateDraft {
+  selectedVideoPath: string
+  upscaleModelPath: string
+  interpolationModelPath: string
+  resolutionPreset: string
+  interpolationScale: number
+}
+
 export interface AppSettings {
   provider: TranslationProvider
   lmStudioBaseUrl: string
@@ -108,6 +118,7 @@ export interface AppSettings {
   i2vDraft: I2vGenerateDraft
   flf2vDraft: Flf2vGenerateDraft
   loopDraft: LoopGenerateDraft
+  upscaleDraft: UpscaleGenerateDraft
   windowWidth: number
   windowHeight: number
   windowX: number | null
@@ -136,6 +147,8 @@ export interface GalleryVideoProbeInfo {
   bitDepth: number | null
   container: string | null
   seed: number | null
+  fps: number | null
+  frameCount: number | null
 }
 
 const api = {
@@ -274,6 +287,8 @@ const api = {
     ditFolders?: string[]
     vaeFolders?: string[]
     clipFolders?: string[]
+    upscaleFolders?: string[]
+    frameInterpFolders?: string[]
     useSageAttention?: boolean
   }): Promise<{ ok: boolean; error?: string; alreadyRunning?: boolean }> =>
     ipcRenderer.invoke('comfy:start', opts),
@@ -348,6 +363,12 @@ const api = {
     baseUrl?: string
   }): Promise<{ name: string; subfolder: string; type: string }> =>
     ipcRenderer.invoke('comfy:uploadImage', opts),
+
+  comfyUploadVideo: (opts: {
+    videoPath: string
+    baseUrl?: string
+  }): Promise<{ name: string; subfolder: string; type: string }> =>
+    ipcRenderer.invoke('comfy:uploadVideo', opts),
 
   onComfyLog: (cb: (payload: { line: string; stream: string }) => void) => {
     const listener = (_e: IpcRendererEvent, payload: { line: string; stream: string }) =>

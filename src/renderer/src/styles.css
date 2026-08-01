@@ -4086,6 +4086,82 @@ button.danger.kbd-focus {
   border: 1px solid var(--border);
 }
 
+.upscale-selected-video-btn video,
+.upscale-picker-video-item video {
+  width: 100%;
+  max-height: 12rem;
+  object-fit: contain;
+  border-radius: 4px;
+  background: #0e1014;
+  display: block;
+  border: 1px solid var(--border);
+  pointer-events: none;
+}
+
+.upscale-picker-video-item video {
+  max-height: 8rem;
+  aspect-ratio: 9 / 16;
+  object-fit: cover;
+}
+
+.upscale-settings-scroll {
+  grid-template-columns: 1fr;
+}
+
+.upscale-view .generate-body {
+  grid-template-columns: minmax(260px, 320px) minmax(0, 1fr) minmax(220px, 260px);
+}
+
+.upscale-selected-video-btn {
+  max-width: 100%;
+  aspect-ratio: 1 / 1;
+  height: auto;
+  min-height: 0;
+  padding: 0.35rem;
+  overflow: hidden;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.upscale-view .generate-selected-image-btn.is-empty {
+  aspect-ratio: 1 / 1;
+  min-height: 0;
+}
+
+.upscale-selected-video-btn video {
+  width: 100%;
+  height: 100%;
+  max-height: none;
+  aspect-ratio: auto;
+  object-fit: contain;
+}
+
+.upscale-result-pane .upscale-result-player {
+  flex: 1 1 auto;
+  min-height: 0;
+}
+
+.upscale-view .generate-comfy-row {
+  display: flex;
+  align-items: center;
+  gap: 0.45rem;
+  margin-bottom: 0.85rem;
+  flex-wrap: wrap;
+}
+
+.upscale-view .comfy-status-dot {
+  width: 0.55rem;
+  height: 0.55rem;
+  border-radius: 50%;
+  background: var(--text-muted);
+  flex-shrink: 0;
+}
+
+.upscale-view .comfy-status-dot.online {
+  background: #3ecf8e;
+}
+
 .generate-image-picker-modal {
   display: flex;
   flex-direction: column;
@@ -4300,6 +4376,10 @@ button.danger.kbd-focus {
 @media (max-width: 1100px) {
   .generate-body {
     grid-template-columns: minmax(480px, 560px) minmax(0, 1fr);
+  }
+
+  .upscale-view .generate-body {
+    grid-template-columns: minmax(240px, 300px) minmax(0, 1fr);
   }
 
   .generate-monitor {

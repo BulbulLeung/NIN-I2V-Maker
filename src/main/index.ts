@@ -31,7 +31,7 @@ import { readImagePositivePrompt } from './imagePromptMeta'
 const execFileAsync = promisify(execFile)
 
 const IMAGE_EXTS = new Set(['.jpg', '.jpeg', '.png', '.webp', '.bmp', '.gif'])
-const MODEL_EXTS = new Set(['.safetensors', '.ckpt', '.pt'])
+const MODEL_EXTS = new Set(['.safetensors', '.ckpt', '.pt', '.pth'])
 const VIDEO_EXTS = new Set(['.mp4', '.webm', '.mov'])
 
 const WAN_DEFAULT_NEGATIVE =
@@ -60,7 +60,7 @@ try {
 
 type TranslationProvider = 'lmstudio' | 'ollama'
 type UiGpuMode = 'auto' | 'software' | 'onboard'
-type ActiveView = 'prompt' | 'i2v' | 'flf2v' | 'loop'
+type ActiveView = 'prompt' | 'i2v' | 'flf2v' | 'loop' | 'upscale'
 type FlfMode = 'flf2v' | 'wanfun_inpaint'
 
 interface PromptPreset {
@@ -76,6 +76,8 @@ interface SharedComfyDraft {
   lowDitPath: string
   speedLoraFolder: string
   wan22LoraFolder: string
+  upscaleModelFolder: string
+  frameInterpModelFolder: string
   vaePath: string
   clipPath: string
   outputFolder: string
@@ -134,6 +136,14 @@ interface Flf2vGenerateDraft extends VideoGenerateParams {
 
 type LoopGenerateDraft = Flf2vGenerateDraft
 
+interface UpscaleGenerateDraft {
+  selectedVideoPath: string
+  upscaleModelPath: string
+  interpolationModelPath: string
+  resolutionPreset: string
+  interpolationScale: number
+}
+
 interface AppSettings {
   provider: TranslationProvider
   lmStudioBaseUrl: string
@@ -160,6 +170,7 @@ interface AppSettings {
   i2vDraft: I2vGenerateDraft
   flf2vDraft: Flf2vGenerateDraft
   loopDraft: LoopGenerateDraft
+  upscaleDraft: UpscaleGenerateDraft
   windowWidth: number
   windowHeight: number
   windowX: number | null
@@ -197,6 +208,8 @@ const DEFAULT_SHARED_COMFY: SharedComfyDraft = {
   lowDitPath: '',
   speedLoraFolder: '',
   wan22LoraFolder: '',
+  upscaleModelFolder: '',
+  frameInterpModelFolder: '',
   vaePath: '',
   clipPath: '',
   outputFolder: '',
@@ -253,6 +266,14 @@ const DEFAULT_LOOP_DRAFT: LoopGenerateDraft = {
   flfMode: 'flf2v'
 }
 
+const DEFAULT_UPSCALE_DRAFT: UpscaleGenerateDraft = {
+  selectedVideoPath: '',
+  upscaleModelPath: '',
+  interpolationModelPath: '',
+  resolutionPreset: '540p',
+  interpolationScale: 1
+}
+
 const DEFAULT_SETTINGS: AppSettings = {
   provider: 'lmstudio',
   lmStudioBaseUrl: 'http://localhost:1234/v1',
@@ -279,6 +300,7 @@ const DEFAULT_SETTINGS: AppSettings = {
   i2vDraft: { ...DEFAULT_I2V_DRAFT },
   flf2vDraft: { ...DEFAULT_FLF2V_DRAFT },
   loopDraft: { ...DEFAULT_LOOP_DRAFT },
+  upscaleDraft: { ...DEFAULT_UPSCALE_DRAFT },
   windowWidth: DEFAULT_WINDOW.width,
   windowHeight: DEFAULT_WINDOW.height,
   windowX: null,
@@ -301,6 +323,7 @@ function normalizeActiveView(raw: unknown): ActiveView {
   if (raw === 'i2v' || raw === 'generate') return 'i2v'
   if (raw === 'flf2v') return 'flf2v'
   if (raw === 'loop') return 'loop'
+  if (raw === 'upscale') return 'upscale'
   return 'prompt'
 }
 
@@ -366,6 +389,10 @@ function normalizeSharedComfy(raw: unknown): SharedComfyDraft {
     lowDitPath,
     speedLoraFolder,
     wan22LoraFolder: strField(o.wan22LoraFolder),
+    upscaleModelFolder:
+      strField(o.upscaleModelFolder) || parentDirOf(strField(o.upscaleModelPath)),
+    frameInterpModelFolder:
+      strField(o.frameInterpModelFolder) || parentDirOf(strField(o.interpolationModelPath)),
     vaePath: strField(o.vaePath),
     clipPath: strField(o.clipPath),
     outputFolder: strField(o.outputFolder),
@@ -482,19 +509,56 @@ function normalizeLoopDraft(raw: unknown): LoopGenerateDraft {
   return normalizeFlf2vDraft(raw ?? DEFAULT_LOOP_DRAFT)
 }
 
+function normalizeUpscaleDraft(raw: unknown): UpscaleGenerateDraft {
+  const o = raw && typeof raw === 'object' ? (raw as Record<string, unknown>) : {}
+  const presets = [
+    '144p',
+    '240p',
+    '360p',
+    '480p',
+    '540p',
+    '576p',
+    '720p',
+    '900p',
+    '1080p',
+    '1152p',
+    '1440p',
+    '2160p',
+    '2K',
+    '4K'
+  ]
+  const presetRaw = strField(o.resolutionPreset, DEFAULT_UPSCALE_DRAFT.resolutionPreset)
+  const resolutionPreset = presets.includes(presetRaw)
+    ? presetRaw
+    : DEFAULT_UPSCALE_DRAFT.resolutionPreset
+  const interpolationScale = Math.min(
+    16,
+    Math.max(1, Math.round(numField(o.interpolationScale, 1)))
+  )
+  return {
+    selectedVideoPath: strField(o.selectedVideoPath),
+    upscaleModelPath: strField(o.upscaleModelPath),
+    interpolationModelPath: strField(o.interpolationModelPath),
+    resolutionPreset,
+    interpolationScale
+  }
+}
+
 /** Migrate legacy generateDraft into sharedComfy + i2vDraft + flf2vDraft + loopDraft. */
 function migrateGenerateSettings(parsed: Record<string, unknown>): {
   sharedComfy: SharedComfyDraft
   i2vDraft: I2vGenerateDraft
   flf2vDraft: Flf2vGenerateDraft
   loopDraft: LoopGenerateDraft
+  upscaleDraft: UpscaleGenerateDraft
 } {
   const legacy = parsed.generateDraft
   const hasNew =
     parsed.sharedComfy != null ||
     parsed.i2vDraft != null ||
     parsed.flf2vDraft != null ||
-    parsed.loopDraft != null
+    parsed.loopDraft != null ||
+    parsed.upscaleDraft != null
 
   if (hasNew) {
     const fromLegacy =
@@ -521,11 +585,19 @@ function migrateGenerateSettings(parsed: Record<string, unknown>): {
       shared.speedLoraFolder =
         parentDirOf(i2vDraft.loraHighPath) || parentDirOf(i2vDraft.loraLowPath)
     }
+    const upscaleDraft = normalizeUpscaleDraft(parsed.upscaleDraft)
+    if (!shared.upscaleModelFolder.trim()) {
+      shared.upscaleModelFolder = parentDirOf(upscaleDraft.upscaleModelPath)
+    }
+    if (!shared.frameInterpModelFolder.trim()) {
+      shared.frameInterpModelFolder = parentDirOf(upscaleDraft.interpolationModelPath)
+    }
     return {
       sharedComfy: shared,
       i2vDraft,
       flf2vDraft: normalizeFlf2vDraft(parsed.flf2vDraft ?? legacy),
-      loopDraft: normalizeLoopDraft(parsed.loopDraft ?? parsed.flf2vDraft ?? legacy)
+      loopDraft: normalizeLoopDraft(parsed.loopDraft ?? parsed.flf2vDraft ?? legacy),
+      upscaleDraft
     }
   }
 
@@ -534,7 +606,8 @@ function migrateGenerateSettings(parsed: Record<string, unknown>): {
       sharedComfy: normalizeSharedComfy(legacy),
       i2vDraft: normalizeI2vDraft(legacy),
       flf2vDraft: normalizeFlf2vDraft(legacy),
-      loopDraft: normalizeLoopDraft(legacy)
+      loopDraft: normalizeLoopDraft(legacy),
+      upscaleDraft: normalizeUpscaleDraft(parsed.upscaleDraft)
     }
   }
 
@@ -542,7 +615,8 @@ function migrateGenerateSettings(parsed: Record<string, unknown>): {
     sharedComfy: { ...DEFAULT_SHARED_COMFY },
     i2vDraft: { ...DEFAULT_I2V_DRAFT },
     flf2vDraft: { ...DEFAULT_FLF2V_DRAFT },
-    loopDraft: { ...DEFAULT_LOOP_DRAFT }
+    loopDraft: { ...DEFAULT_LOOP_DRAFT },
+    upscaleDraft: { ...DEFAULT_UPSCALE_DRAFT }
   }
 }
 
@@ -602,7 +676,8 @@ async function loadSettings(): Promise<AppSettings> {
       sharedComfy: migrated.sharedComfy,
       i2vDraft: migrated.i2vDraft,
       flf2vDraft: migrated.flf2vDraft,
-      loopDraft: migrated.loopDraft
+      loopDraft: migrated.loopDraft,
+      upscaleDraft: migrated.upscaleDraft
     }
   } catch {
     return {
@@ -610,7 +685,8 @@ async function loadSettings(): Promise<AppSettings> {
       sharedComfy: { ...DEFAULT_SHARED_COMFY },
       i2vDraft: { ...DEFAULT_I2V_DRAFT },
       flf2vDraft: { ...DEFAULT_FLF2V_DRAFT },
-      loopDraft: { ...DEFAULT_LOOP_DRAFT }
+      loopDraft: { ...DEFAULT_LOOP_DRAFT },
+      upscaleDraft: { ...DEFAULT_UPSCALE_DRAFT }
     }
   }
 }
@@ -1114,6 +1190,10 @@ app.whenReady().then(async () => {
         ...migrated.loopDraft,
         ...(settings.loopDraft || {})
       },
+      upscaleDraft: {
+        ...migrated.upscaleDraft,
+        ...(settings.upscaleDraft || {})
+      },
       uiGpuMode,
       disableUiGpu: uiGpuMode === 'software',
       // Window geometry is owned by main; never let renderer wipe it
@@ -1183,6 +1263,8 @@ app.whenReady().then(async () => {
         ditFolders?: string[]
         vaeFolders?: string[]
         clipFolders?: string[]
+        upscaleFolders?: string[]
+        frameInterpFolders?: string[]
         useSageAttention?: boolean
       }
     ) => startComfyUi(opts)
@@ -1310,6 +1392,52 @@ app.whenReady().then(async () => {
         method: 'POST',
         body: form,
         signal: AbortSignal.timeout(120_000)
+      })
+      const text = await res.text()
+      if (!res.ok) {
+        throw new Error(`Upload failed HTTP ${res.status}: ${text.slice(0, 400)}`)
+      }
+      let parsed: { name?: string; subfolder?: string; type?: string }
+      try {
+        parsed = JSON.parse(text) as { name?: string; subfolder?: string; type?: string }
+      } catch {
+        throw new Error(`Invalid upload response: ${text.slice(0, 400)}`)
+      }
+      return {
+        name: parsed.name || fileName,
+        subfolder: parsed.subfolder || '',
+        type: parsed.type || 'input'
+      }
+    }
+  )
+
+  ipcMain.handle(
+    'comfy:uploadVideo',
+    async (
+      _event,
+      opts: { videoPath: string; baseUrl?: string }
+    ): Promise<{ name: string; subfolder: string; type: string }> => {
+      const videoPath = (opts?.videoPath || '').trim()
+      if (!videoPath) throw new Error('videoPath is empty')
+      if (!existsSync(videoPath)) {
+        throw new Error(`Video not found: ${videoPath}`)
+      }
+      const baseUrl = ((opts?.baseUrl || 'http://127.0.0.1:8188').trim() || 'http://127.0.0.1:8188').replace(
+        /\/$/,
+        ''
+      )
+      const buf = await readFile(videoPath)
+      const fileName = basename(videoPath)
+      const mime = mimeForExt(extname(videoPath))
+      const bytes = new Uint8Array(buf)
+      const blob = new Blob([bytes], { type: mime })
+      const form = new FormData()
+      form.append('image', blob, fileName)
+
+      const res = await fetch(`${baseUrl}/upload/image`, {
+        method: 'POST',
+        body: form,
+        signal: AbortSignal.timeout(300_000)
       })
       const text = await res.text()
       if (!res.ok) {

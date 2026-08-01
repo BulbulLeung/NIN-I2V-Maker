@@ -82,6 +82,8 @@ export function SearchableSelect({
   const [query, setQuery] = useState('')
   const [highlight, setHighlight] = useState(0)
   const [panelStyle, setPanelStyle] = useState<CSSProperties>({})
+  /** Blocks label-induced re-click on the trigger right after picking an option. */
+  const suppressTriggerClickRef = useRef(false)
 
   const selected = useMemo(
     () => options.find((o) => o.value === value) ?? null,
@@ -137,8 +139,13 @@ export function SearchableSelect({
   }
 
   const pick = (next: string) => {
-    onChange(next)
+    // Close first so the panel unmounts before any label-synthesized trigger click.
+    suppressTriggerClickRef.current = true
     close()
+    onChange(next)
+    window.setTimeout(() => {
+      suppressTriggerClickRef.current = false
+    }, 0)
   }
 
   useLayoutEffect(() => {
@@ -220,7 +227,11 @@ export function SearchableSelect({
         aria-haspopup="listbox"
         aria-expanded={open}
         aria-controls={listId}
-        onClick={() => (open ? close() : openPanel())}
+        onClick={() => {
+          if (suppressTriggerClickRef.current) return
+          if (open) close()
+          else openPanel()
+        }}
       >
         <span
           className={`searchable-select-value${!selected && !(value === '' && emptyLabel != null) ? ' is-placeholder' : ''}`}
@@ -267,7 +278,13 @@ export function SearchableSelect({
                       aria-selected={active}
                       className={`searchable-select-option${active ? ' is-active' : ''}${i === highlight ? ' is-highlight' : ''}`}
                       onMouseEnter={() => setHighlight(i)}
-                      onClick={() => pick(opt.value)}
+                      onMouseDown={(e) => {
+                        // preventDefault stops <label> from re-activating the trigger
+                        // (which would reopen the list right after pick).
+                        e.preventDefault()
+                        e.stopPropagation()
+                        pick(opt.value)
+                      }}
                     >
                       {opt.label}
                     </button>

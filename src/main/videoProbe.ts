@@ -12,6 +12,10 @@ export interface VideoProbeInfo {
   bitDepth: number | null
   container: string | null
   seed: number | null
+  /** Frames per second when detectable (MP4/MOV); null if unknown. */
+  fps: number | null
+  /** Total video sample/frame count when detectable (MP4/MOV stts); null if unknown. */
+  frameCount: number | null
 }
 
 const FOURCC_CODEC: Record<string, string> = {
@@ -81,6 +85,8 @@ type Mp4Probe = {
   height: number | null
   codec: string | null
   bitDepth: number | null
+  fps: number | null
+  frameCount: number | null
 }
 
 function walkBoxes(
@@ -116,7 +122,9 @@ function probeMp4Buffer(buf: Buffer): Mp4Probe {
     width: null,
     height: null,
     codec: null,
-    bitDepth: null
+    bitDepth: null,
+    fps: null,
+    frameCount: null
   }
 
   const visitStsd = (payloadStart: number, payloadEnd: number) => {
@@ -199,21 +207,49 @@ function probeMp4Buffer(buf: Buffer): Mp4Probe {
     }
   }
 
-  const visitContainer = (start: number, end: number) => {
-    walkBoxes(buf, start, end, (type, payloadStart, payloadEnd) => {
-      if (
-        type === 'moov' ||
-        type === 'trak' ||
-        type === 'mdia' ||
-        type === 'minf' ||
-        type === 'stbl' ||
-        type === 'edts'
-      ) {
-        visitContainer(payloadStart, payloadEnd)
-      } else if (type === 'stsd') {
-        visitStsd(payloadStart, payloadEnd)
+  const visitTrak = (trakStart: number, trakEnd: number) => {
+    let isVideo = false
+    let timescale: number | null = null
+    let sampleDelta: number | null = null
+    let sampleTotal = 0
+
+    const visitMdia = (start: number, end: number) => {
+      walkBoxes(buf, start, end, (type, payloadStart, payloadEnd) => {
+        if (type === 'hdlr' && payloadEnd - payloadStart >= 12) {
+          // FullBox(4) + pre_defined(4) + handler_type(4)
+          const handler = readFourCC(buf, payloadStart + 8)
+          if (handler === 'vide') isVideo = true
+        } else if (type === 'mdhd' && payloadEnd - payloadStart >= 20) {
+          const version = buf[payloadStart]
+          if (version === 1 && payloadEnd - payloadStart >= 28) {
+            timescale = readU32BE(buf, payloadStart + 20)
+          } else {
+            timescale = readU32BE(buf, payloadStart + 12)
+          }
+        } else if (type === 'minf' || type === 'stbl') {
+          visitMdia(payloadStart, payloadEnd)
+        } else if (type === 'stsd') {
+          visitStsd(payloadStart, payloadEnd)
+        } else if (type === 'stts' && payloadEnd - payloadStart >= 16) {
+          // FullBox(4) + entry_count(4) + [sample_count(4) + sample_delta(4)]*
+          const entryCount = readU32BE(buf, payloadStart + 4)
+          if (entryCount > 0) {
+            sampleDelta = readU32BE(buf, payloadStart + 12)
+            let off = payloadStart + 8
+            for (let i = 0; i < entryCount && off + 8 <= payloadEnd; i++) {
+              sampleTotal += readU32BE(buf, off)
+              if (i === 0) sampleDelta = readU32BE(buf, off + 4)
+              off += 8
+            }
+          }
+        }
+      })
+    }
+
+    walkBoxes(buf, trakStart, trakEnd, (type, payloadStart, payloadEnd) => {
+      if (type === 'mdia' || type === 'edts') {
+        visitMdia(payloadStart, payloadEnd)
       } else if (type === 'tkhd' && (result.width == null || result.height == null)) {
-        // version 0: width/height at +76; version 1: at +88 (16.16 fixed)
         if (payloadEnd - payloadStart >= 4) {
           const version = buf[payloadStart]
           const whOffset = version === 1 ? payloadStart + 88 : payloadStart + 76
@@ -226,6 +262,26 @@ function probeMp4Buffer(buf: Buffer): Mp4Probe {
             }
           }
         }
+      }
+    })
+
+    if (isVideo && timescale && timescale > 0 && sampleDelta && sampleDelta > 0 && result.fps == null) {
+      const fps = timescale / sampleDelta
+      if (Number.isFinite(fps) && fps > 0 && fps <= 240) {
+        result.fps = Math.round(fps * 1000) / 1000
+      }
+    }
+    if (isVideo && sampleTotal > 0 && result.frameCount == null) {
+      result.frameCount = sampleTotal
+    }
+  }
+
+  const visitContainer = (start: number, end: number) => {
+    walkBoxes(buf, start, end, (type, payloadStart, payloadEnd) => {
+      if (type === 'moov') {
+        visitContainer(payloadStart, payloadEnd)
+      } else if (type === 'trak') {
+        visitTrak(payloadStart, payloadEnd)
       }
     })
   }
@@ -345,7 +401,9 @@ export async function probeVideoFile(filePath: string): Promise<VideoProbeInfo> 
     codec: null,
     bitDepth: null,
     container: containerFromExt(ext),
-    seed: null
+    seed: null,
+    fps: null,
+    frameCount: null
   }
 
   try {
@@ -362,6 +420,8 @@ export async function probeVideoFile(filePath: string): Promise<VideoProbeInfo> 
       info.height = parsed.height
       info.codec = parsed.codec
       info.bitDepth = parsed.bitDepth
+      info.fps = parsed.fps
+      info.frameCount = parsed.frameCount
     } else if (ext === '.webm') {
       const buf = await readHead(filePath, Math.min(st.size, 2 * 1024 * 1024))
       const parsed = probeWebmBuffer(buf)

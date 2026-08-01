@@ -8,13 +8,15 @@ import {
   type I2vGenerateDraft,
   type ImageItem,
   type LoopGenerateDraft,
-  type SharedComfyDraft
+  type SharedComfyDraft,
+  type UpscaleGenerateDraft
 } from './types'
 import { createDefaultPromptPreset } from './defaults/i2vPromptPresets'
 import { parseSidecarCaption } from './utils/sidecarCaption'
 import { SettingsDialog } from './components/SettingsDialog'
 import { PromptView } from './components/PromptView'
 import { GenerateView } from './components/GenerateView'
+import { UpscaleView } from './components/UpscaleView'
 import { setLocalAiBlocked } from './services/localAiGate'
 
 interface StatusState {
@@ -53,7 +55,7 @@ export function App() {
     void (async () => {
       try {
         const raw = await window.api.getSettings()
-        let next = normalizeSettings(raw)
+        let next = normalizeSettings(raw as unknown as Record<string, unknown>)
         if (!next.promptPresets.length) {
           const preset = createDefaultPromptPreset()
           next = {
@@ -97,7 +99,10 @@ export function App() {
           : prev.flf2vDraft,
         loopDraft: partial.loopDraft
           ? { ...prev.loopDraft, ...partial.loopDraft }
-          : prev.loopDraft
+          : prev.loopDraft,
+        upscaleDraft: partial.upscaleDraft
+          ? { ...prev.upscaleDraft, ...partial.upscaleDraft }
+          : prev.upscaleDraft
       })
       if (persistTimer.current) clearTimeout(persistTimer.current)
       persistTimer.current = setTimeout(() => {
@@ -220,6 +225,10 @@ export function App() {
 
   const onLoopDraftChange = (loopDraft: LoopGenerateDraft) => {
     persistSettings({ loopDraft })
+  }
+
+  const onUpscaleDraftChange = (upscaleDraft: UpscaleGenerateDraft) => {
+    persistSettings({ upscaleDraft })
   }
 
   const onPromptSourceChange = useCallback(
@@ -353,6 +362,15 @@ export function App() {
             >
               LOOP
             </button>
+            <button
+              type="button"
+              role="tab"
+              className={`view-switch-seg${settings.activeView === 'upscale' ? ' active' : ''}`}
+              aria-selected={settings.activeView === 'upscale'}
+              onClick={() => setView('upscale')}
+            >
+              UPSCALE
+            </button>
           </div>
         </div>
         <div className="toolbar-right">
@@ -441,6 +459,24 @@ export function App() {
           onSelectStartImage={onSelectStartImage}
           onSharedComfyChange={onSharedComfyChange}
           onDraftChange={(d) => onLoopDraftChange(d as LoopGenerateDraft)}
+          onStatus={onStatus}
+          videoGenerating={videoGenerating}
+          onVideoGeneratingChange={onVideoGeneratingChange}
+        />
+      </div>
+
+      <div
+        className="app-view-slot"
+        style={{ display: settings.activeView === 'upscale' ? undefined : 'none' }}
+        aria-hidden={settings.activeView !== 'upscale'}
+      >
+        <UpscaleView
+          active={settings.activeView === 'upscale'}
+          settings={settings}
+          sharedComfy={settings.sharedComfy}
+          draft={settings.upscaleDraft}
+          onSharedComfyChange={onSharedComfyChange}
+          onDraftChange={onUpscaleDraftChange}
           onStatus={onStatus}
           videoGenerating={videoGenerating}
           onVideoGeneratingChange={onVideoGeneratingChange}

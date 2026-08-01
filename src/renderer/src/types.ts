@@ -7,11 +7,13 @@ import {
   DEFAULT_I2V_GENERATE_DRAFT,
   DEFAULT_LOOP_GENERATE_DRAFT,
   DEFAULT_SHARED_COMFY,
+  DEFAULT_UPSCALE_GENERATE_DRAFT,
   migrateGenerateSettings,
   normalizeActiveView,
   normalizeFlf2vGenerateDraft,
   normalizeI2vGenerateDraft,
   normalizeSharedComfyDraft,
+  normalizeUpscaleGenerateDraft,
   pythonInstallPathFromDownloadFolder,
   type ActiveView,
   type Flf2vGenerateDraft,
@@ -19,6 +21,7 @@ import {
   type I2vGenerateDraft,
   type LoopGenerateDraft,
   type SharedComfyDraft,
+  type UpscaleGenerateDraft,
   type ExtraLoraEntry,
   type Wan22VideoMode,
   type VideoSaveBitDepth,
@@ -35,6 +38,7 @@ export type {
   I2vGenerateDraft,
   LoopGenerateDraft,
   SharedComfyDraft,
+  UpscaleGenerateDraft,
   VideoSaveBitDepth,
   VideoSaveCodec,
   VideoSaveFormat,
@@ -45,6 +49,7 @@ export {
   DEFAULT_I2V_GENERATE_DRAFT,
   DEFAULT_LOOP_GENERATE_DRAFT,
   DEFAULT_SHARED_COMFY,
+  DEFAULT_UPSCALE_GENERATE_DRAFT,
   DEFAULT_VIDEO_CRF,
   VIDEO_CRF_MAX,
   VIDEO_CRF_MIN,
@@ -57,6 +62,7 @@ export {
   normalizeFlf2vGenerateDraft,
   normalizeI2vGenerateDraft,
   normalizeSharedComfyDraft,
+  normalizeUpscaleGenerateDraft,
   pythonInstallPathFromDownloadFolder
 } from './defaults/i2vGenerate'
 
@@ -150,6 +156,7 @@ export interface AppSettings {
   i2vDraft: I2vGenerateDraft
   flf2vDraft: Flf2vGenerateDraft
   loopDraft: LoopGenerateDraft
+  upscaleDraft: UpscaleGenerateDraft
 }
 
 const defaultPreset = createDefaultPromptPreset()
@@ -179,7 +186,8 @@ export const DEFAULT_SETTINGS: AppSettings = {
   sharedComfy: { ...DEFAULT_SHARED_COMFY },
   i2vDraft: { ...DEFAULT_I2V_GENERATE_DRAFT },
   flf2vDraft: { ...DEFAULT_FLF2V_GENERATE_DRAFT },
-  loopDraft: { ...DEFAULT_LOOP_GENERATE_DRAFT }
+  loopDraft: { ...DEFAULT_LOOP_GENERATE_DRAFT },
+  upscaleDraft: { ...DEFAULT_UPSCALE_GENERATE_DRAFT }
 }
 
 function normalizeUiGpuMode(raw: unknown): UiGpuMode {
@@ -254,7 +262,8 @@ export function normalizeSettings(
     sharedComfy: migrated.sharedComfy,
     i2vDraft: migrated.i2vDraft,
     flf2vDraft: migrated.flf2vDraft,
-    loopDraft: migrated.loopDraft
+    loopDraft: migrated.loopDraft,
+    upscaleDraft: migrated.upscaleDraft
   }
 }
 

@@ -1,6 +1,10 @@
 import { join } from '../utils/pathJoin'
+import {
+  DEFAULT_RESOLUTION_PRESET,
+  isResolutionPreset
+} from '../utils/wanResolution'
 
-export type ActiveView = 'prompt' | 'i2v' | 'flf2v' | 'loop'
+export type ActiveView = 'prompt' | 'i2v' | 'flf2v' | 'loop' | 'upscale'
 export type FlfMode = 'flf2v' | 'wanfun_inpaint'
 export type Wan22VideoMode = 'i2v' | 'flf2v' | 'wanfun_inpaint'
 
@@ -15,6 +19,10 @@ export interface SharedComfyDraft {
   speedLoraFolder: string
   /** Folder for extra style / character LoRAs (addable list). */
   wan22LoraFolder: string
+  /** Folder for UpscaleModelLoader weights (Upscale page dropdown). */
+  upscaleModelFolder: string
+  /** Folder for FrameInterpolationModelLoader weights (Upscale page dropdown). */
+  frameInterpModelFolder: string
   vaePath: string
   clipPath: string
   outputFolder: string
@@ -33,6 +41,18 @@ export interface SharedComfyDraft {
    * Reduces VAE color shift vs the source still.
    */
   useColorMatch: boolean
+}
+
+/** Upscale / Interpolation panel draft (independent of I2V generate params). */
+export interface UpscaleGenerateDraft {
+  selectedVideoPath: string
+  upscaleModelPath: string
+  /** Frame interpolation model path (basename used by FrameInterpolationModelLoader). */
+  interpolationModelPath: string
+  /** Target resolution preset (same options as generate). Empty / Off = skip upscale resize. */
+  resolutionPreset: string
+  /** 1 = skip interpolation */
+  interpolationScale: number
 }
 
 export type VideoSaveFormat = 'auto' | 'mp4' | 'webm' | 'mkv'
@@ -162,6 +182,8 @@ export const DEFAULT_SHARED_COMFY: SharedComfyDraft = {
   lowDitPath: '',
   speedLoraFolder: '',
   wan22LoraFolder: '',
+  upscaleModelFolder: '',
+  frameInterpModelFolder: '',
   vaePath: '',
   clipPath: '',
   outputFolder: '',
@@ -171,6 +193,14 @@ export const DEFAULT_SHARED_COMFY: SharedComfyDraft = {
   videoCrf: DEFAULT_VIDEO_CRF,
   useSageAttention: true,
   useColorMatch: true
+}
+
+export const DEFAULT_UPSCALE_GENERATE_DRAFT: UpscaleGenerateDraft = {
+  selectedVideoPath: '',
+  upscaleModelPath: '',
+  interpolationModelPath: '',
+  resolutionPreset: '540p',
+  interpolationScale: 1
 }
 
 export const DEFAULT_VIDEO_PARAMS: VideoGenerateParams = {
@@ -357,6 +387,10 @@ export function normalizeSharedComfyDraft(raw: unknown): SharedComfyDraft {
     lowDitPath,
     speedLoraFolder,
     wan22LoraFolder: str(r.wan22LoraFolder),
+    upscaleModelFolder:
+      str(r.upscaleModelFolder) || parentDir(str(r.upscaleModelPath)),
+    frameInterpModelFolder:
+      str(r.frameInterpModelFolder) || parentDir(str(r.interpolationModelPath)),
     vaePath: str(r.vaePath),
     clipPath: str(r.clipPath),
     outputFolder: str(r.outputFolder),
@@ -372,6 +406,26 @@ export function normalizeSharedComfyDraft(raw: unknown): SharedComfyDraft {
       typeof r.useColorMatch === 'boolean'
         ? r.useColorMatch
         : DEFAULT_SHARED_COMFY.useColorMatch
+  }
+}
+
+export function normalizeUpscaleGenerateDraft(raw: unknown): UpscaleGenerateDraft {
+  const r = (raw && typeof raw === 'object' ? raw : {}) as Record<string, unknown>
+  const presetRaw = str(r.resolutionPreset)
+  const resolutionPreset = isResolutionPreset(presetRaw)
+    ? presetRaw
+    : DEFAULT_UPSCALE_GENERATE_DRAFT.resolutionPreset || DEFAULT_RESOLUTION_PRESET
+  return {
+    selectedVideoPath: str(r.selectedVideoPath),
+    upscaleModelPath: str(r.upscaleModelPath),
+    interpolationModelPath: str(r.interpolationModelPath),
+    resolutionPreset,
+    interpolationScale: num(
+      r.interpolationScale,
+      DEFAULT_UPSCALE_GENERATE_DRAFT.interpolationScale,
+      1,
+      16
+    )
   }
 }
 
@@ -402,13 +456,15 @@ export function migrateGenerateSettings(raw: Record<string, unknown>): {
   i2vDraft: I2vGenerateDraft
   flf2vDraft: Flf2vGenerateDraft
   loopDraft: LoopGenerateDraft
+  upscaleDraft: UpscaleGenerateDraft
 } {
   const legacy = raw.generateDraft
   const hasNew =
     raw.sharedComfy != null ||
     raw.i2vDraft != null ||
     raw.flf2vDraft != null ||
-    raw.loopDraft != null
+    raw.loopDraft != null ||
+    raw.upscaleDraft != null
 
   if (hasNew) {
     const sharedFromLegacy =
@@ -440,11 +496,19 @@ export function migrateGenerateSettings(raw: Record<string, unknown>): {
       shared.speedLoraFolder =
         parentDir(i2vDraft.loraHighPath) || parentDir(i2vDraft.loraLowPath)
     }
+    const upscaleDraft = normalizeUpscaleGenerateDraft(raw.upscaleDraft)
+    if (!shared.upscaleModelFolder.trim()) {
+      shared.upscaleModelFolder = parentDir(upscaleDraft.upscaleModelPath)
+    }
+    if (!shared.frameInterpModelFolder.trim()) {
+      shared.frameInterpModelFolder = parentDir(upscaleDraft.interpolationModelPath)
+    }
     return {
       sharedComfy: shared,
       i2vDraft,
       flf2vDraft: normalizeFlf2vGenerateDraft(raw.flf2vDraft ?? legacy),
-      loopDraft: normalizeLoopGenerateDraft(raw.loopDraft ?? raw.flf2vDraft ?? legacy)
+      loopDraft: normalizeLoopGenerateDraft(raw.loopDraft ?? raw.flf2vDraft ?? legacy),
+      upscaleDraft
     }
   }
 
@@ -453,7 +517,8 @@ export function migrateGenerateSettings(raw: Record<string, unknown>): {
       sharedComfy: normalizeSharedComfyDraft(legacy),
       i2vDraft: normalizeI2vGenerateDraft(legacy),
       flf2vDraft: normalizeFlf2vGenerateDraft(legacy),
-      loopDraft: normalizeLoopGenerateDraft(legacy)
+      loopDraft: normalizeLoopGenerateDraft(legacy),
+      upscaleDraft: normalizeUpscaleGenerateDraft(raw.upscaleDraft)
     }
   }
 
@@ -461,7 +526,8 @@ export function migrateGenerateSettings(raw: Record<string, unknown>): {
     sharedComfy: { ...DEFAULT_SHARED_COMFY },
     i2vDraft: { ...DEFAULT_I2V_GENERATE_DRAFT },
     flf2vDraft: { ...DEFAULT_FLF2V_GENERATE_DRAFT },
-    loopDraft: { ...DEFAULT_LOOP_GENERATE_DRAFT }
+    loopDraft: { ...DEFAULT_LOOP_GENERATE_DRAFT },
+    upscaleDraft: { ...DEFAULT_UPSCALE_GENERATE_DRAFT }
   }
 }
 
@@ -469,6 +535,7 @@ export function normalizeActiveView(value: unknown): ActiveView {
   if (value === 'i2v' || value === 'generate') return 'i2v'
   if (value === 'flf2v') return 'flf2v'
   if (value === 'loop') return 'loop'
+  if (value === 'upscale') return 'upscale'
   return 'prompt'
 }
 

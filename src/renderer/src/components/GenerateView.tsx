@@ -538,6 +538,8 @@ export function GenerateView({
         [d.loraHighPath, d.loraLowPath, ...extraPaths],
         [s.speedLoraFolder, s.wan22LoraFolder]
       )
+      const upscaleFolders = uniqueDirs([], [s.upscaleModelFolder])
+      const frameInterpFolders = uniqueDirs([], [s.frameInterpModelFolder])
       const result = await window.api.startComfyUi({
         batPath: bat,
         pythonPath: settings.pythonPath.trim() || undefined,
@@ -546,6 +548,8 @@ export function GenerateView({
         vaeFolders,
         clipFolders,
         loraFolders,
+        upscaleFolders,
+        frameInterpFolders,
         useSageAttention: s.useSageAttention
       })
       if (!result.ok) {

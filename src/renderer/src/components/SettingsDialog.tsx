@@ -444,6 +444,58 @@ export function SettingsDialog({ settings, open, onClose, onSave }: Props) {
               </label>
 
               <label className="field">
+                <span>Upscale model folder</span>
+                <div className="field-row">
+                  <input
+                    type="text"
+                    value={gd.upscaleModelFolder}
+                    onChange={(e) => patchSharedComfy({ upscaleModelFolder: e.target.value })}
+                    spellCheck={false}
+                    placeholder="Folder with UpscaleModelLoader weights"
+                  />
+                  <button
+                    type="button"
+                    onClick={() => {
+                      void window.api.openFolder().then((dir) => {
+                        if (dir) patchSharedComfy({ upscaleModelFolder: dir })
+                      })
+                    }}
+                  >
+                    Browse
+                  </button>
+                </div>
+                <p className="field-hint">
+                  Upscale page model dropdown lists files from this folder.
+                </p>
+              </label>
+
+              <label className="field">
+                <span>Frame Interpolation model folder</span>
+                <div className="field-row">
+                  <input
+                    type="text"
+                    value={gd.frameInterpModelFolder}
+                    onChange={(e) => patchSharedComfy({ frameInterpModelFolder: e.target.value })}
+                    spellCheck={false}
+                    placeholder="Folder with FrameInterpolationModelLoader weights"
+                  />
+                  <button
+                    type="button"
+                    onClick={() => {
+                      void window.api.openFolder().then((dir) => {
+                        if (dir) patchSharedComfy({ frameInterpModelFolder: dir })
+                      })
+                    }}
+                  >
+                    Browse
+                  </button>
+                </div>
+                <p className="field-hint">
+                  Upscale page Interpolation model dropdown lists files from this folder.
+                </p>
+              </label>
+
+              <label className="field">
                 <span>VAE</span>
                 <div className="field-row">
                   <input

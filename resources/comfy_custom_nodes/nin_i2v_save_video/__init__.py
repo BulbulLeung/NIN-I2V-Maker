@@ -1,5 +1,6 @@
 """
 NIN I2V Maker — ComfyUI custom nodes.
+- NINI2VLoadVideo: decode video file from Comfy input/ to IMAGE batch via PyAV
 - NINI2VSaveVideo: encode IMAGE batches to H264 / H265 / AV1 / VP9 / ProRes via PyAV
 - NINI2VColorMatch: Reinhard LAB color match (start image → decoded frames)
 """
@@ -112,6 +113,9 @@ class NINI2VSaveVideo:
                 "bit_depth": ([8, 10], {"default": 8}),
                 "crf": ("FLOAT", {"default": 23.0, "min": 0.0, "max": 63.0, "step": 1.0}),
             },
+            "optional": {
+                "filename_suffix": ("STRING", {"default": ""}),
+            },
             "hidden": {
                 "prompt": "PROMPT",
                 "extra_pnginfo": "EXTRA_PNGINFO",
@@ -133,6 +137,7 @@ class NINI2VSaveVideo:
         codec: str,
         bit_depth: int,
         crf: float,
+        filename_suffix: str = "",
         prompt: Any = None,
         extra_pnginfo: Any = None,
     ):
@@ -152,7 +157,13 @@ class NINI2VSaveVideo:
         format = str(format)
         codec = str(codec)
         ext = _ext_for(format, codec)
-        file = f"{filename}_{counter:05}_.{ext}"
+        suffix = str(filename_suffix or "").strip()
+        if suffix and not suffix.startswith(("_", "-")):
+            suffix = "_" + suffix
+        if suffix:
+            file = f"{filename}_{counter:05}{suffix}.{ext}"
+        else:
+            file = f"{filename}_{counter:05}_.{ext}"
         out_path = os.path.join(full_output_folder, file)
 
         frame_rate = Fraction(round(float(fps) * 1000), 1000)
@@ -346,7 +357,63 @@ class NINI2VColorMatch:
         return (out.clamp(0.0, 1.0),)
 
 
+class NINI2VLoadVideo:
+    @classmethod
+    def INPUT_TYPES(cls):
+        return {
+            "required": {
+                "video": ("STRING", {"default": "", "multiline": False}),
+            }
+        }
+
+    RETURN_TYPES = ("IMAGE",)
+    RETURN_NAMES = ("images",)
+    FUNCTION = "load_video"
+    CATEGORY = "NIN I2V Maker"
+    DESCRIPTION = "Decode a video from ComfyUI input/ into an IMAGE batch (RGB float 0–1)."
+
+    def load_video(self, video: str):
+        import av
+
+        name = (video or "").strip()
+        if not name:
+            raise ValueError("NINI2VLoadVideo: video path is empty")
+
+        path = folder_paths.get_annotated_filepath(name)
+        if not path or not os.path.isfile(path):
+            # Fallback: treat as path under input directory
+            candidate = os.path.join(folder_paths.get_input_directory(), name.replace("\\", "/"))
+            if os.path.isfile(candidate):
+                path = candidate
+            else:
+                raise FileNotFoundError(f"NINI2VLoadVideo: video not found: {name}")
+
+        frames: list[np.ndarray] = []
+        container = av.open(path)
+        try:
+            stream = next((s for s in container.streams if s.type == "video"), None)
+            if stream is None:
+                raise ValueError(f"NINI2VLoadVideo: no video stream in {name}")
+            for frame in container.decode(stream):
+                arr = frame.to_ndarray(format="rgb24")
+                if arr is None or arr.size == 0:
+                    continue
+                frames.append(arr)
+        finally:
+            container.close()
+
+        if not frames:
+            raise ValueError(f"NINI2VLoadVideo: no frames decoded from {name}")
+
+        # Stack to [N,H,W,C] float32 in 0..1
+        batch = np.stack(frames, axis=0).astype(np.float32) / 255.0
+        images = torch.from_numpy(batch)
+        return (images,)
+
+
 NODE_CLASS_MAPPINGS["NINI2VSaveVideo"] = NINI2VSaveVideo
 NODE_CLASS_MAPPINGS["NINI2VColorMatch"] = NINI2VColorMatch
+NODE_CLASS_MAPPINGS["NINI2VLoadVideo"] = NINI2VLoadVideo
 NODE_DISPLAY_NAME_MAPPINGS["NINI2VSaveVideo"] = "NIN I2V Save Video"
 NODE_DISPLAY_NAME_MAPPINGS["NINI2VColorMatch"] = "NIN I2V Color Match"
+NODE_DISPLAY_NAME_MAPPINGS["NINI2VLoadVideo"] = "NIN I2V Load Video"
