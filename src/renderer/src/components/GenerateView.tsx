@@ -24,6 +24,7 @@ import {
 import { parentDir } from '../services/comfyI2v'
 import { ResourceMonitorPane } from './ResourceMonitorPane'
 import { ExtraLoraDialog } from './ExtraLoraDialog'
+import { SearchableSelect } from './SearchableSelect'
 import {
   ASPECT_PRESET_OPTIONS,
   ASPECT_PRESETS,
@@ -127,6 +128,7 @@ export function GenerateView({
   const [speedLoraModels, setSpeedLoraModels] = useState<{ name: string; path: string }[]>([])
   const [wan22LoraModels, setWan22LoraModels] = useState<{ name: string; path: string }[]>([])
   const [loraPopupOpen, setLoraPopupOpen] = useState(false)
+  const [imagePicker, setImagePicker] = useState<null | 'start' | 'end'>(null)
 
   const abortRef = useRef<AbortController | null>(null)
   const draftRef = useRef(draft)
@@ -485,11 +487,11 @@ export function GenerateView({
             ? 'FLF2V'
             : 'WanFunInpaint'
 
-    const report = (step: number, total: number, detail: string) => {
-      onStatus(`[${step}/${total}] ${detail}`, false, { sticky: true })
+    const report = (detail: string) => {
+      onStatus(detail, false, { sticky: true })
     }
 
-    report(1, 8, `Checking ComfyUI online (${modeLabel})…`)
+    report(`Checking ComfyUI online (${modeLabel})…`)
     const online = await ensureComfyOnline()
     if (!online) return
 
@@ -497,15 +499,22 @@ export function GenerateView({
     const ac = new AbortController()
     abortRef.current = ac
     setGenerating(true)
+    const startedAt = Date.now()
+
+    const formatElapsed = (ms: number) => {
+      const totalSec = Math.max(0, Math.round(ms / 1000))
+      const m = Math.floor(totalSec / 60)
+      const s = totalSec % 60
+      if (m <= 0) return `${s}s`
+      return `${m}m ${s}s`
+    }
 
     try {
       report(
-        2,
-        8,
         `Prepare ${modeLabel}: ${width}×${height}, ${lengthFrames} frames @ ${d.fps}fps, steps ${d.steps} (refiner ${d.refinerStep})`
       )
 
-      report(3, 8, `Uploading start image… (${basenamePath(startPath)})`)
+      report(`Uploading start image… (${basenamePath(startPath)})`)
       const uploadedStart = await window.api.comfyUploadImage({
         imagePath: startPath,
         baseUrl: COMFY_BASE_URL
@@ -514,22 +523,20 @@ export function GenerateView({
       let uploadedEnd: { name: string; subfolder?: string } | undefined
       if (mode !== 'i2v' && endPath) {
         if (isLoop && endPath === startPath) {
-          report(4, 8, 'End frame = start frame (loop) — reusing upload')
+          report('End frame = start frame (loop) — reusing upload')
           uploadedEnd = uploadedStart
         } else {
-          report(4, 8, `Uploading end image… (${basenamePath(endPath)})`)
+          report(`Uploading end image… (${basenamePath(endPath)})`)
           uploadedEnd = await window.api.comfyUploadImage({
             imagePath: endPath,
             baseUrl: COMFY_BASE_URL
           })
         }
       } else {
-        report(4, 8, 'No end frame required (I2V)')
+        report('No end frame required (I2V)')
       }
 
       report(
-        5,
-        8,
         `ComfyUI generate: seed ${d.seed < 0 ? 'random' : d.seed}, sampler ${d.sampler}/${d.scheduler}` +
           (useSpeedLora ? ', Speed LoRA on' : '')
       )
@@ -586,7 +593,7 @@ export function GenerateView({
           baseUrl: COMFY_BASE_URL,
           onProgress: (msg) => {
             if (ac.signal.aborted) return
-            onStatus(`[5/8] ${msg}`, false, { sticky: true })
+            onStatus(msg, false, { sticky: true })
           }
         }
       )
@@ -595,8 +602,6 @@ export function GenerateView({
 
       const videoRef = result.videos[0]
       report(
-        6,
-        8,
         `Resolve output… (${videoRef.subfolder ? `${videoRef.subfolder}/` : ''}${videoRef.filename})`
       )
       const resolved = await window.api.comfyResolveImagePath({
@@ -608,7 +613,7 @@ export function GenerateView({
         throw new Error(resolved.error || 'Could not resolve ComfyUI video path')
       }
 
-      report(7, 8, `Save to gallery… → ${s.outputFolder.trim()}`)
+      report(`Save to gallery… → ${s.outputFolder.trim()}`)
       const saved = await window.api.gallerySaveVideo({
         sourcePath: resolved.path,
         outputFolder: s.outputFolder.trim()
@@ -617,11 +622,14 @@ export function GenerateView({
         throw new Error(saved.error || 'Failed to save video to gallery')
       }
 
-      report(8, 8, 'Refresh gallery…')
+      report('Refresh gallery…')
       await refreshGallery()
       setSelectedVideo(saved.path)
+      const elapsed = formatElapsed(Date.now() - startedAt)
       onStatus(
-        `[8/8] Done — ${modeLabel}, seed ${result.seed}, ${result.length} frames, ${width}×${height}`
+        `Done — ${modeLabel}, seed ${result.seed}, ${result.length} frames, ${width}×${height}, ${elapsed}`,
+        false,
+        { sticky: true }
       )
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err)
@@ -663,30 +671,27 @@ export function GenerateView({
     const folder = sharedComfy.ditModelFolder.trim()
     const value = String(sharedComfy[key] ?? '')
     const known = ditModels.some((m) => m.path === value)
+    const options = [
+      ...(!known && value
+        ? [{ value, label: `${basenamePath(value)} (not in folder)` }]
+        : []),
+      ...ditModels.map((m) => ({ value: m.path, label: m.name }))
+    ]
+    const placeholder = !folder
+      ? 'Set DiT model folder in Settings'
+      : ditModels.length === 0
+        ? 'No models in folder'
+        : 'Select DiT model…'
     return (
       <label className="field">
         <span>{label}</span>
-        <select
+        <SearchableSelect
           value={known ? value : value ? value : ''}
+          options={options}
           disabled={!folder || ditModels.length === 0}
-          onChange={(e) => patchShared({ [key]: e.target.value })}
-        >
-          <option value="" disabled>
-            {!folder
-              ? 'Set DiT model folder in Settings'
-              : ditModels.length === 0
-                ? 'No models in folder'
-                : 'Select DiT model…'}
-          </option>
-          {!known && value ? (
-            <option value={value}>{basenamePath(value)} (not in folder)</option>
-          ) : null}
-          {ditModels.map((m) => (
-            <option key={m.path} value={m.path}>
-              {m.name}
-            </option>
-          ))}
-        </select>
+          placeholder={placeholder}
+          onChange={(next) => patchShared({ [key]: next })}
+        />
       </label>
     )
   }
@@ -716,24 +721,23 @@ export function GenerateView({
       }
       patchDraft(next)
     }
+    const options = [
+      ...(!known && value
+        ? [{ value, label: `${basenamePath(value)} (not in folder)` }]
+        : []),
+      ...speedLoraModels.map((m) => ({ value: m.path, label: m.name }))
+    ]
     return (
       <label className="field">
         <span>{label}</span>
         <div className="generate-speed-lora-row">
-          <select
+          <SearchableSelect
             value={known ? value : value ? value : ''}
-            onChange={(e) => onPick(e.target.value)}
-          >
-            <option value="">-NONE-</option>
-            {!known && value ? (
-              <option value={value}>{basenamePath(value)} (not in folder)</option>
-            ) : null}
-            {speedLoraModels.map((m) => (
-              <option key={m.path} value={m.path}>
-                {m.name}
-              </option>
-            ))}
-          </select>
+            options={options}
+            emptyLabel="-NONE-"
+            placeholder="-NONE-"
+            onChange={onPick}
+          />
           <input
             type="number"
             className="generate-speed-lora-weight"
@@ -761,268 +765,281 @@ export function GenerateView({
       <div className="generate-body">
         <aside className="generate-settings">
           <div className="generate-settings-scroll">
-            <div className="lora-test-comfy-row">
-              <span className={`lora-test-comfy-dot${comfyOnline ? ' online' : ''}`} />
-              <span className="lora-test-comfy-label">
-                ComfyUI {comfyOnline ? 'online' : 'offline'}
-              </span>
-              <button type="button" disabled={comfyBusy || generating} onClick={() => void startComfy()}>
-                Start
-              </button>
-              <button type="button" disabled={comfyBusy || generating} onClick={() => void stopComfy()}>
-                Stop
-              </button>
-            </div>
-
-            {panel === 'flf2v' || panel === 'loop' ? (
-              <label className="field">
-                <span>Mode</span>
-                <div className="view-switch generate-mode-switch" role="tablist" aria-label="FLF mode">
-                  <button
-                    type="button"
-                    role="tab"
-                    className={`view-switch-seg${flfMode === 'flf2v' ? ' active' : ''}`}
-                    aria-selected={flfMode === 'flf2v'}
-                    onClick={() => patchDraft({ flfMode: 'flf2v' })}
-                  >
-                    FLF2V
-                  </button>
-                  <button
-                    type="button"
-                    role="tab"
-                    className={`view-switch-seg${flfMode === 'wanfun_inpaint' ? ' active' : ''}`}
-                    aria-selected={flfMode === 'wanfun_inpaint'}
-                    onClick={() => patchDraft({ flfMode: 'wanfun_inpaint' })}
-                  >
-                    WanFunInpaint
-                  </button>
-                </div>
-              </label>
-            ) : null}
-
-            {ditModelSelect('High noise DiT', 'highDitPath')}
-            {ditModelSelect('Low noise DiT', 'lowDitPath')}
-
-            {speedLoraSelect('Speed LoRA (high)', 'loraHighPath', 'loraHighStrength')}
-            {speedLoraSelect('Speed LoRA (low)', 'loraLowPath', 'loraLowStrength')}
-            {!sharedComfy.speedLoraFolder.trim() ? (
-              <p className="field-hint">Set Speed LoRA folder in Settings to list models.</p>
-            ) : null}
-
-            <div className="field generate-extra-loras">
-              <div className="generate-extra-loras-head">
-                <span>Extra LoRAs</span>
-                <button type="button" onClick={() => setLoraPopupOpen(true)}>
-                  Add LoRA
+            <div className="generate-settings-col generate-settings-col-left">
+              <div className="lora-test-comfy-row">
+                <span className={`lora-test-comfy-dot${comfyOnline ? ' online' : ''}`} />
+                <span className="lora-test-comfy-label">
+                  ComfyUI {comfyOnline ? 'online' : 'offline'}
+                </span>
+                <button type="button" disabled={comfyBusy || generating} onClick={() => void startComfy()}>
+                  Start
+                </button>
+                <button type="button" disabled={comfyBusy || generating} onClick={() => void stopComfy()}>
+                  Stop
                 </button>
               </div>
-              {!sharedComfy.wan22LoraFolder.trim() ? (
-                <p className="field-hint">Set Wan22 LoRA folder in Settings → ComfyUI.</p>
-              ) : (
-                <p className="field-hint">
-                  {extraLoraCount === 0
-                    ? 'No extra LoRAs — open the panel to add high / low LoRAs.'
-                    : `${extraLoraCount} active · High ${activeHigh} / Low ${activeLow}`}
-                </p>
-              )}
-            </div>
 
-            <label className="field">
-              <span>Resolution</span>
-              <select
-                value={
-                  isResolutionPreset(draft.resolutionPreset)
-                    ? draft.resolutionPreset
-                    : DEFAULT_RESOLUTION_PRESET
-                }
-                onChange={(e) => patchDraft({ resolutionPreset: e.target.value })}
-              >
-                {RESOLUTION_PRESET_OPTIONS.map((p) => (
-                  <option key={p} value={p}>
-                    {p}
-                  </option>
-                ))}
-              </select>
-            </label>
-
-            <label className="field checkbox-field">
-              <input
-                type="checkbox"
-                checked={draft.scaleFromImage}
-                onChange={(e) => patchDraft({ scaleFromImage: e.target.checked })}
-              />
-              <span>Scale from start image aspect</span>
-            </label>
-
-            {!draft.scaleFromImage ? (
-              <label className="field">
-                <span>Aspect</span>
-                <select
-                  value={
-                    isAspectPreset(draft.aspectPreset)
-                      ? draft.aspectPreset
-                      : DEFAULT_ASPECT_PRESET
-                  }
-                  onChange={(e) => patchDraft({ aspectPreset: e.target.value })}
-                >
-                  {ASPECT_PRESET_OPTIONS.map((a) => (
-                    <option key={a} value={a}>
-                      {a}
-                    </option>
-                  ))}
-                </select>
-              </label>
-            ) : null}
-
-            <p className="field-hint">
-              Size: {resolvedSize.width}×{resolvedSize.height} (WAN Div32, like workflow)
-            </p>
-
-            <div className="field-row-grid">
-              {numField('Seconds', 'seconds', { step: 0.5, min: 0.5, max: 60 })}
-              {numField('FPS', 'fps', { min: 1, max: 60 })}
-            </div>
-            <p className="field-hint">
-              Length: {frameCount} frames (round(seconds×fps/8)×8+1)
-            </p>
-            <div className="field-row-grid">
-              {numField('Steps', 'steps', { min: 1, max: 100 })}
-              {numField('Refiner step', 'refinerStep', { min: 1, max: 100 })}
-            </div>
-            <div className="field-row-grid">
-              {numField('CFG-HIGH', 'cfgHigh', { step: 0.1, min: 0, max: 30 })}
-              {numField('CFG (low)', 'cfg', { step: 0.1, min: 0, max: 30 })}
-            </div>
-            <div className="field-row-grid">
-              {numField('Seed (−1 = random)', 'seed')}
-              {numField('Shift', 'shift', { step: 0.1, min: 0, max: 20 })}
-            </div>
-
-            <div className="field-row-grid">
-              <label className="field">
-                <span>Sampler</span>
-                <select
-                  value={draft.sampler}
-                  onChange={(e) => patchDraft({ sampler: e.target.value })}
-                >
-                  {SAMPLERS.map((s) => (
-                    <option key={s} value={s}>
-                      {s}
-                    </option>
-                  ))}
-                  {!SAMPLERS.includes(draft.sampler as (typeof SAMPLERS)[number]) ? (
-                    <option value={draft.sampler}>{draft.sampler}</option>
-                  ) : null}
-                </select>
-              </label>
-              <label className="field">
-                <span>Scheduler</span>
-                <select
-                  value={draft.scheduler}
-                  onChange={(e) => patchDraft({ scheduler: e.target.value })}
-                >
-                  {SCHEDULERS.map((s) => (
-                    <option key={s} value={s}>
-                      {s}
-                    </option>
-                  ))}
-                  {!SCHEDULERS.includes(draft.scheduler as (typeof SCHEDULERS)[number]) ? (
-                    <option value={draft.scheduler}>{draft.scheduler}</option>
-                  ) : null}
-                </select>
-              </label>
-            </div>
-
-            <label className="field">
-              <span>Prompt (from Prompt tab)</span>
-              <textarea
-                rows={4}
-                value={draft.prompt}
-                onChange={(e) => patchDraft({ prompt: e.target.value })}
-                spellCheck={false}
-                placeholder="Select an image and generate a prompt in the Prompt tab"
-              />
-              <p className="field-hint">Synced from Prompt; edits here apply to this generate only.</p>
-            </label>
-
-            <label className="field">
-              <span>Negative</span>
-              <textarea
-                rows={3}
-                value={draft.negative}
-                onChange={(e) => patchDraft({ negative: e.target.value })}
-                spellCheck={false}
-                placeholder={defaults.negative.slice(0, 40) + '…'}
-              />
-            </label>
-
-            <div className="field">
-              <span>
-                {panel === 'loop' ? 'Loop frame (Prompt images)' : 'Start frame (Prompt images)'}
-              </span>
-              {promptImages.length === 0 ? (
-                <p className="field-hint">No images — open a folder in the Prompt tab.</p>
-              ) : (
-                <div
-                  className="generate-prompt-image-list"
-                  role="listbox"
-                  aria-label={panel === 'loop' ? 'Loop frame' : 'Start frame'}
-                >
-                  {promptImages.map((img) => {
-                    const active =
-                      img.path === (startImagePath || draft.selectedImagePath)
-                    return (
-                      <button
-                        key={img.path}
-                        type="button"
-                        role="option"
-                        aria-selected={active}
-                        className={`generate-prompt-image-item${active ? ' active' : ''}${img.hasCaption ? ' has-caption' : ''}`}
-                        title={img.name}
-                        onClick={() => onSelectStartImage(img.path)}
-                      >
-                        <img src={window.api.toLocalUrl(img.path)} alt="" />
-                        <span className="generate-prompt-image-name">{img.name}</span>
-                      </button>
-                    )
-                  })}
-                </div>
-              )}
-              {panel === 'loop' ? (
-                <p className="field-hint">
-                  Used as both first and last frame (seamless loop).
-                </p>
-              ) : null}
-            </div>
-
-            {panel === 'flf2v' ? (
-              <div className="field">
-                <span>End frame (Prompt images)</span>
-                {promptImages.length === 0 ? (
-                  <p className="field-hint">No images — open a folder in the Prompt tab.</p>
-                ) : (
-                  <div className="generate-prompt-image-list" role="listbox" aria-label="End frame">
-                    {promptImages.map((img) => {
-                      const active = img.path === endImagePath
-                      return (
-                        <button
-                          key={`end-${img.path}`}
-                          type="button"
-                          role="option"
-                          aria-selected={active}
-                          className={`generate-prompt-image-item${active ? ' active' : ''}`}
-                          title={img.name}
-                          onClick={() => patchDraft({ endImagePath: img.path })}
-                        >
-                          <img src={window.api.toLocalUrl(img.path)} alt="" />
-                          <span className="generate-prompt-image-name">{img.name}</span>
-                        </button>
-                      )
-                    })}
+              {panel === 'flf2v' || panel === 'loop' ? (
+                <label className="field">
+                  <span>Mode</span>
+                  <div className="view-switch generate-mode-switch" role="tablist" aria-label="FLF mode">
+                    <button
+                      type="button"
+                      role="tab"
+                      className={`view-switch-seg${flfMode === 'flf2v' ? ' active' : ''}`}
+                      aria-selected={flfMode === 'flf2v'}
+                      onClick={() => patchDraft({ flfMode: 'flf2v' })}
+                    >
+                      FLF2V
+                    </button>
+                    <button
+                      type="button"
+                      role="tab"
+                      className={`view-switch-seg${flfMode === 'wanfun_inpaint' ? ' active' : ''}`}
+                      aria-selected={flfMode === 'wanfun_inpaint'}
+                      onClick={() => patchDraft({ flfMode: 'wanfun_inpaint' })}
+                    >
+                      WanFunInpaint
+                    </button>
                   </div>
+                </label>
+              ) : null}
+
+              {ditModelSelect('High noise DiT', 'highDitPath')}
+              {ditModelSelect('Low noise DiT', 'lowDitPath')}
+
+              {speedLoraSelect('Speed LoRA (high)', 'loraHighPath', 'loraHighStrength')}
+              {speedLoraSelect('Speed LoRA (low)', 'loraLowPath', 'loraLowStrength')}
+              {!sharedComfy.speedLoraFolder.trim() ? (
+                <p className="field-hint">Set Speed LoRA folder in Settings to list models.</p>
+              ) : null}
+
+              <div className="field generate-extra-loras">
+                <button
+                  type="button"
+                  className="generate-lora-manager-btn"
+                  onClick={() => setLoraPopupOpen(true)}
+                >
+                  LoRA Manager
+                </button>
+                {!sharedComfy.wan22LoraFolder.trim() ? (
+                  <p className="field-hint">Set Wan22 LoRA folder in Settings → ComfyUI.</p>
+                ) : (
+                  <p className="field-hint">
+                    {extraLoraCount === 0
+                      ? 'No extra LoRAs — open the panel to add high / low LoRAs.'
+                      : `${extraLoraCount} active · High ${activeHigh} / Low ${activeLow}`}
+                  </p>
                 )}
               </div>
-            ) : null}
+
+              <label className="field">
+                <span>Resolution</span>
+                <select
+                  value={
+                    isResolutionPreset(draft.resolutionPreset)
+                      ? draft.resolutionPreset
+                      : DEFAULT_RESOLUTION_PRESET
+                  }
+                  onChange={(e) => patchDraft({ resolutionPreset: e.target.value })}
+                >
+                  {RESOLUTION_PRESET_OPTIONS.map((p) => (
+                    <option key={p} value={p}>
+                      {p}
+                    </option>
+                  ))}
+                </select>
+              </label>
+
+              <label className="field checkbox-field">
+                <input
+                  type="checkbox"
+                  checked={draft.scaleFromImage}
+                  onChange={(e) => patchDraft({ scaleFromImage: e.target.checked })}
+                />
+                <span>Scale from start image aspect</span>
+              </label>
+
+              {!draft.scaleFromImage ? (
+                <label className="field">
+                  <span>Aspect</span>
+                  <select
+                    value={
+                      isAspectPreset(draft.aspectPreset)
+                        ? draft.aspectPreset
+                        : DEFAULT_ASPECT_PRESET
+                    }
+                    onChange={(e) => patchDraft({ aspectPreset: e.target.value })}
+                  >
+                    {ASPECT_PRESET_OPTIONS.map((a) => (
+                      <option key={a} value={a}>
+                        {a}
+                      </option>
+                    ))}
+                  </select>
+                </label>
+              ) : null}
+
+              <p className="field-hint">
+                Size: {resolvedSize.width}×{resolvedSize.height} (WAN Div32, like workflow)
+              </p>
+
+              <div className="field-row-grid">
+                {numField('Seconds', 'seconds', { step: 0.5, min: 0.5, max: 60 })}
+                {numField('FPS', 'fps', { min: 1, max: 60 })}
+              </div>
+              <p className="field-hint">
+                Length: {frameCount} frames (round(seconds×fps/8)×8+1)
+              </p>
+              <div className="field-row-grid">
+                {numField('Steps', 'steps', { min: 1, max: 100 })}
+                {numField('Refiner step', 'refinerStep', { min: 1, max: 100 })}
+              </div>
+              <div className="field-row-grid">
+                {numField('CFG-HIGH', 'cfgHigh', { step: 0.1, min: 0, max: 30 })}
+                {numField('CFG (low)', 'cfg', { step: 0.1, min: 0, max: 30 })}
+              </div>
+              <div className="field-row-grid">
+                {numField('Seed (−1 = random)', 'seed')}
+                {numField('Shift', 'shift', { step: 0.1, min: 0, max: 20 })}
+              </div>
+
+              <div className="field-row-grid">
+                <label className="field">
+                  <span>Sampler</span>
+                  <select
+                    value={draft.sampler}
+                    onChange={(e) => patchDraft({ sampler: e.target.value })}
+                  >
+                    {SAMPLERS.map((s) => (
+                      <option key={s} value={s}>
+                        {s}
+                      </option>
+                    ))}
+                    {!SAMPLERS.includes(draft.sampler as (typeof SAMPLERS)[number]) ? (
+                      <option value={draft.sampler}>{draft.sampler}</option>
+                    ) : null}
+                  </select>
+                </label>
+                <label className="field">
+                  <span>Scheduler</span>
+                  <select
+                    value={draft.scheduler}
+                    onChange={(e) => patchDraft({ scheduler: e.target.value })}
+                  >
+                    {SCHEDULERS.map((s) => (
+                      <option key={s} value={s}>
+                        {s}
+                      </option>
+                    ))}
+                    {!SCHEDULERS.includes(draft.scheduler as (typeof SCHEDULERS)[number]) ? (
+                      <option value={draft.scheduler}>{draft.scheduler}</option>
+                    ) : null}
+                  </select>
+                </label>
+              </div>
+            </div>
+
+            <div className="generate-settings-col generate-settings-col-right">
+              <div className="field">
+                <span>
+                  {panel === 'loop' ? 'Loop frame (Prompt images)' : 'Start frame (Prompt images)'}
+                </span>
+                {(() => {
+                  const selectedPath = startImagePath || draft.selectedImagePath
+                  const selected = promptImages.find((img) => img.path === selectedPath)
+                  if (promptImages.length === 0) {
+                    return (
+                      <p className="field-hint">No images — open a folder in the Prompt tab.</p>
+                    )
+                  }
+                  if (!selected) {
+                    return (
+                      <button
+                        type="button"
+                        className="generate-selected-image-btn is-empty"
+                        onClick={() => setImagePicker('start')}
+                      >
+                        Click to choose image
+                      </button>
+                    )
+                  }
+                  return (
+                    <button
+                      type="button"
+                      className="generate-selected-image-btn"
+                      title={selected.name}
+                      onClick={() => setImagePicker('start')}
+                    >
+                      <img src={window.api.toLocalUrl(selected.path)} alt="" />
+                    </button>
+                  )
+                })()}
+                {panel === 'loop' ? (
+                  <p className="field-hint">
+                    Used as both first and last frame (seamless loop).
+                  </p>
+                ) : null}
+              </div>
+
+              {panel === 'flf2v' ? (
+                <div className="field">
+                  <span>End frame (Prompt images)</span>
+                  {(() => {
+                    if (promptImages.length === 0) {
+                      return (
+                        <p className="field-hint">No images — open a folder in the Prompt tab.</p>
+                      )
+                    }
+                    const selected = promptImages.find((img) => img.path === endImagePath)
+                    if (!selected) {
+                      return (
+                        <button
+                          type="button"
+                          className="generate-selected-image-btn is-empty"
+                          onClick={() => setImagePicker('end')}
+                        >
+                          Click to choose end frame
+                        </button>
+                      )
+                    }
+                    return (
+                      <button
+                        type="button"
+                        className="generate-selected-image-btn"
+                        title={selected.name}
+                        onClick={() => setImagePicker('end')}
+                      >
+                        <img src={window.api.toLocalUrl(selected.path)} alt="" />
+                      </button>
+                    )
+                  })()}
+                </div>
+              ) : null}
+
+              <label className="field generate-settings-prompt-field">
+                <span>Prompt (from Prompt tab)</span>
+                <textarea
+                  rows={6}
+                  value={draft.prompt}
+                  onChange={(e) => patchDraft({ prompt: e.target.value })}
+                  spellCheck={false}
+                  placeholder="Select an image and generate a prompt in the Prompt tab"
+                />
+                <p className="field-hint">Synced from Prompt; edits here apply to this generate only.</p>
+              </label>
+
+              <label className="field generate-settings-negative-field">
+                <span>Negative</span>
+                <textarea
+                  rows={5}
+                  value={draft.negative}
+                  onChange={(e) => patchDraft({ negative: e.target.value })}
+                  spellCheck={false}
+                  placeholder={defaults.negative.slice(0, 40) + '…'}
+                />
+              </label>
+            </div>
           </div>
 
           <div className="generate-actions">
@@ -1069,38 +1086,29 @@ export function GenerateView({
             </div>
           </div>
 
-          <div className="generate-source-previews">
-            {(startImagePath || draft.selectedImagePath) ? (
-              <div className="generate-source-preview">
-                <img
-                  src={window.api.toLocalUrl(startImagePath || draft.selectedImagePath)}
-                  alt={panel === 'loop' ? 'Loop' : 'Start'}
-                  title={startImagePath || draft.selectedImagePath}
-                />
-                <span className="generate-source-label">
-                  {panel === 'loop' ? 'Loop frame (Prompt)' : 'Start frame (Prompt)'}
-                </span>
+          <div className="generate-video-player">
+            {selectedVideo ? (
+              <video
+                key={selectedVideo}
+                src={window.api.toLocalUrl(selectedVideo)}
+                controls
+                autoPlay
+                loop
+              />
+            ) : (
+              <div className="generate-video-player-empty">
+                {videos.length > 0
+                  ? 'Select a video below to preview'
+                  : sharedComfy.outputFolder
+                    ? 'No videos in output folder yet'
+                    : 'Choose an output folder in Settings'}
               </div>
-            ) : null}
-            {panel === 'flf2v' && endImagePath ? (
-              <div className="generate-source-preview">
-                <img
-                  src={window.api.toLocalUrl(endImagePath)}
-                  alt="End"
-                  title={endImagePath}
-                />
-                <span className="generate-source-label">End frame</span>
-              </div>
-            ) : null}
+            )}
           </div>
 
           <div className="i2v-gallery">
             {videos.length === 0 ? (
-              <div className="i2v-gallery-empty">
-                {sharedComfy.outputFolder
-                  ? 'No videos in output folder yet'
-                  : 'Choose an output folder to show the gallery'}
-              </div>
+              <div className="i2v-gallery-empty">No videos</div>
             ) : (
               videos.map((v) => (
                 <button
@@ -1128,27 +1136,6 @@ export function GenerateView({
               ))
             )}
           </div>
-
-          {selectedVideo ? (
-            <div className="generate-video-player">
-              <video
-                key={selectedVideo}
-                src={window.api.toLocalUrl(selectedVideo)}
-                controls
-                autoPlay
-                loop
-              />
-              <button
-                type="button"
-                className="generate-show-in-folder"
-                onClick={() => {
-                  void window.api.showItemInFolder(selectedVideo)
-                }}
-              >
-                Show in folder
-              </button>
-            </div>
-          ) : null}
         </section>
 
         <aside className="generate-monitor">
@@ -1166,6 +1153,67 @@ export function GenerateView({
         onChangeLow={(extraLorasLow) => patchDraft({ extraLorasLow })}
         onClose={() => setLoraPopupOpen(false)}
       />
+
+      {imagePicker ? (
+        <div
+          className="modal-backdrop"
+          role="presentation"
+          onClick={() => setImagePicker(null)}
+          onKeyDown={(e) => {
+            if (e.key === 'Escape') setImagePicker(null)
+          }}
+        >
+          <div
+            className="modal modal-wide generate-image-picker-modal"
+            role="dialog"
+            aria-modal="true"
+            aria-label={imagePicker === 'end' ? 'Choose end frame' : 'Choose image'}
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div className="generate-image-picker-header">
+              <h2>
+                {imagePicker === 'end'
+                  ? 'Choose end frame'
+                  : panel === 'loop'
+                    ? 'Choose loop frame'
+                    : 'Choose start frame'}
+              </h2>
+              <button type="button" onClick={() => setImagePicker(null)}>
+                Close
+              </button>
+            </div>
+            <div className="generate-prompt-image-list generate-image-picker-grid" role="listbox">
+              {promptImages.map((img) => {
+                const activePath =
+                  imagePicker === 'end'
+                    ? endImagePath
+                    : startImagePath || draft.selectedImagePath
+                const active = img.path === activePath
+                return (
+                  <button
+                    key={img.path}
+                    type="button"
+                    role="option"
+                    aria-selected={active}
+                    className={`generate-prompt-image-item${active ? ' active' : ''}${img.hasCaption ? ' has-caption' : ''}`}
+                    title={img.name}
+                    onClick={() => {
+                      if (imagePicker === 'end') {
+                        patchDraft({ endImagePath: img.path })
+                      } else {
+                        onSelectStartImage(img.path)
+                      }
+                      setImagePicker(null)
+                    }}
+                  >
+                    <img src={window.api.toLocalUrl(img.path)} alt="" />
+                  </button>
+                )
+              })}
+            </div>
+          </div>
+        </div>
+      ) : null}
     </div>
   )
 }

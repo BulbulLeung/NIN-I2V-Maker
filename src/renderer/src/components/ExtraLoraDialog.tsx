@@ -1,6 +1,7 @@
 import type { ExtraLoraEntry } from '../types'
 import { createExtraLoraEntry } from '../defaults/i2vGenerate'
 import { basenamePath } from '../services/comfyI2v'
+import { SearchableSelect } from './SearchableSelect'
 
 interface ModelFile {
   name: string
@@ -74,25 +75,18 @@ function LoraColumn({
                     {entry.enabled !== false ? 'On' : 'Off'}
                   </span>
                 </button>
-                <select
+                <SearchableSelect
                   value={known ? entry.path : entry.path ? entry.path : ''}
                   disabled={models.length === 0 || entry.enabled === false}
-                  onChange={(e) => update(entry.id, { path: e.target.value })}
-                >
-                  <option value="" disabled>
-                    {models.length === 0 ? 'No LoRAs in folder' : 'Select LoRA…'}
-                  </option>
-                  {!known && entry.path ? (
-                    <option value={entry.path}>
-                      {basenamePath(entry.path)} (not in folder)
-                    </option>
-                  ) : null}
-                  {models.map((m) => (
-                    <option key={m.path} value={m.path}>
-                      {m.name}
-                    </option>
-                  ))}
-                </select>
+                  placeholder={models.length === 0 ? 'No LoRAs in folder' : 'Select LoRA…'}
+                  options={[
+                    ...(!known && entry.path
+                      ? [{ value: entry.path, label: `${basenamePath(entry.path)} (not in folder)` }]
+                      : []),
+                    ...models.map((m) => ({ value: m.path, label: m.name }))
+                  ]}
+                  onChange={(path) => update(entry.id, { path })}
+                />
                 <input
                   type="number"
                   className="lora-popup-weight"
@@ -149,19 +143,16 @@ export function ExtraLoraDialog({
             Close
           </button>
         </div>
-        <p className="field-hint lora-popup-hint">
-          Left: high-noise UNET · Right: low-noise UNET. Each row has model + weight.
-        </p>
         <div className="lora-popup-columns">
           <LoraColumn
-            title="High noise"
+            title="High noise LoRA"
             entries={highLoras}
             models={models}
             folderSet={folderSet}
             onChange={onChangeHigh}
           />
           <LoraColumn
-            title="Low noise"
+            title="Low noise LoRA"
             entries={lowLoras}
             models={models}
             folderSet={folderSet}
