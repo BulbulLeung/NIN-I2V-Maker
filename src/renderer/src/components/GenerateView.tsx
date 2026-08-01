@@ -38,6 +38,7 @@ import {
   isAspectPreset,
   isResolutionPreset
 } from '../utils/wanResolution'
+import { splitModelsByHighLow } from '../utils/highLowModelSplit'
 
 type Panel = 'i2v' | 'flf2v' | 'loop'
 
@@ -877,15 +878,22 @@ export function GenerateView({
     </label>
   )
 
+  const ditModelsBySide = useMemo(() => splitModelsByHighLow(ditModels), [ditModels])
+  const speedLoraModelsBySide = useMemo(
+    () => splitModelsByHighLow(speedLoraModels),
+    [speedLoraModels]
+  )
+
   const ditModelSelect = (label: string, key: 'highDitPath' | 'lowDitPath') => {
     const folder = sharedComfy.ditModelFolder.trim()
     const value = String(sharedComfy[key] ?? '')
-    const known = ditModels.some((m) => m.path === value)
+    const sideModels = key === 'highDitPath' ? ditModelsBySide.high : ditModelsBySide.low
+    const known = sideModels.some((m) => m.path === value)
     const options = [
       ...(!known && value
         ? [{ value, label: `${basenamePath(value)} (not in folder)` }]
         : []),
-      ...ditModels.map((m) => ({ value: m.path, label: m.name }))
+      ...sideModels.map((m) => ({ value: m.path, label: m.name }))
     ]
     const placeholder = !folder
       ? 'Set DiT model folder in Settings'
@@ -913,7 +921,6 @@ export function GenerateView({
     enabledKey: 'loraHighEnabled' | 'loraLowEnabled'
   ) => {
     const value = String(draft[key] ?? '')
-    const known = speedLoraModels.some((m) => m.path === value)
     const enabled = Boolean(draft[enabledKey])
     const onPick = (nextPath: string) => {
       const otherKey = key === 'loraHighPath' ? 'loraLowPath' : 'loraHighPath'
@@ -960,11 +967,14 @@ export function GenerateView({
       }
       patchDraft(next)
     }
+    const sideModels =
+      key === 'loraHighPath' ? speedLoraModelsBySide.high : speedLoraModelsBySide.low
+    const knownSide = sideModels.some((m) => m.path === value)
     const options = [
-      ...(!known && value
+      ...(!knownSide && value
         ? [{ value, label: `${basenamePath(value)} (not in folder)` }]
         : []),
-      ...speedLoraModels.map((m) => ({ value: m.path, label: m.name }))
+      ...sideModels.map((m) => ({ value: m.path, label: m.name }))
     ]
     return (
       <label className="field">
@@ -982,7 +992,7 @@ export function GenerateView({
             <span className="lora-switch-knob" />
           </button>
           <SearchableSelect
-            value={known ? value : value ? value : ''}
+            value={knownSide ? value : value ? value : ''}
             options={options}
             emptyLabel="-NONE-"
             placeholder="-NONE-"

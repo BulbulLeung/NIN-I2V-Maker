@@ -36,28 +36,31 @@ function matchesQuery(option: SearchableSelectOption, query: string): boolean {
 
 function styleFromTriggerRect(r: DOMRect): CSSProperties {
   const gap = 2
-  const spaceBelow = window.innerHeight - r.bottom - gap - 8
-  const spaceAbove = r.top - 8
+  const margin = 8
+  const spaceBelow = window.innerHeight - r.bottom - gap - margin
+  const spaceAbove = r.top - margin
   const preferBelow = spaceBelow >= 140 || spaceBelow >= spaceAbove
   const maxHeight = Math.min(256, Math.max(120, preferBelow ? spaceBelow : spaceAbove))
-  if (preferBelow) {
-    return {
-      position: 'fixed',
-      left: r.left,
-      top: r.bottom + gap,
-      width: r.width,
-      maxHeight,
-      zIndex: 80
-    }
-  }
-  return {
+  const maxWidth = Math.max(r.width, window.innerWidth - margin * 2)
+  const base: CSSProperties = {
     position: 'fixed',
     left: r.left,
-    bottom: window.innerHeight - r.top + gap,
-    width: r.width,
+    minWidth: r.width,
+    width: 'max-content',
+    maxWidth,
     maxHeight,
     zIndex: 80
   }
+  if (preferBelow) {
+    return { ...base, top: r.bottom + gap }
+  }
+  return { ...base, bottom: window.innerHeight - r.top + gap }
+}
+
+function clampPanelLeft(triggerLeft: number, panelWidth: number): number {
+  const margin = 8
+  if (triggerLeft + panelWidth <= window.innerWidth - margin) return triggerLeft
+  return Math.max(margin, window.innerWidth - margin - panelWidth)
 }
 
 export function SearchableSelect({
@@ -111,7 +114,16 @@ export function SearchableSelect({
   const updatePanelPosition = () => {
     const el = triggerRef.current
     if (!el) return
-    setPanelStyle(styleFromTriggerRect(el.getBoundingClientRect()))
+    const r = el.getBoundingClientRect()
+    setPanelStyle(styleFromTriggerRect(r))
+    requestAnimationFrame(() => {
+      const panel = panelRef.current
+      const trigger = triggerRef.current
+      if (!panel || !trigger) return
+      const tr = trigger.getBoundingClientRect()
+      const left = clampPanelLeft(tr.left, panel.getBoundingClientRect().width)
+      setPanelStyle((prev) => (prev.left === left ? prev : { ...prev, left }))
+    })
   }
 
   const openPanel = () => {
@@ -139,7 +151,7 @@ export function SearchableSelect({
       window.removeEventListener('resize', onReposition)
       window.removeEventListener('scroll', onReposition, true)
     }
-  }, [open])
+  }, [open, filtered])
 
   useEffect(() => {
     if (!open) return

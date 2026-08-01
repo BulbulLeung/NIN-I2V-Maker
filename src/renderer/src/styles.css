@@ -1651,9 +1651,9 @@ button.danger.kbd-focus {
   border-bottom: 1px solid var(--border);
   border-radius: 0;
   background: var(--bg-input);
-  padding: 0.4rem 0.55rem;
+  padding: 0.32rem 0.5rem;
   color: var(--text);
-  font-size: 0.85rem;
+  font-size: 0.72rem;
 }
 
 .searchable-select-search:focus {
@@ -1669,26 +1669,31 @@ button.danger.kbd-focus {
   overflow-y: auto;
   flex: 1;
   min-height: 0;
+  width: max-content;
+  min-width: 100%;
+  box-sizing: border-box;
 }
 
 .searchable-select-empty {
-  padding: 0.55rem 0.5rem;
+  padding: 0.4rem 0.45rem;
   color: var(--text-muted);
-  font-size: 0.8rem;
+  font-size: 0.68rem;
   text-align: center;
 }
 
 .searchable-select-option {
   display: block;
-  width: 100%;
+  width: max-content;
+  min-width: 100%;
   box-sizing: border-box;
   text-align: left;
   border: none;
   border-radius: 4px;
   background: transparent;
   color: var(--text);
-  padding: 0.35rem 0.45rem;
-  font-size: 0.82rem;
+  padding: 0.22rem 0.4rem;
+  font-size: 0.68rem;
+  line-height: 1.35;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;

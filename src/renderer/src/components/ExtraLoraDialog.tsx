@@ -1,6 +1,7 @@
 import type { ExtraLoraEntry } from '../types'
 import { createExtraLoraEntry } from '../defaults/i2vGenerate'
 import { basenamePath } from '../services/comfyI2v'
+import { splitModelsByHighLow } from '../utils/highLowModelSplit'
 import { SearchableSelect } from './SearchableSelect'
 
 interface ModelFile {
@@ -128,6 +129,8 @@ export function ExtraLoraDialog({
 }: Props) {
   if (!open) return null
 
+  const { high: highModels, low: lowModels } = splitModelsByHighLow(models)
+
   return (
     <div className="modal-backdrop" role="presentation" onClick={onClose}>
       <div
@@ -147,14 +150,14 @@ export function ExtraLoraDialog({
           <LoraColumn
             title="High noise LoRA"
             entries={highLoras}
-            models={models}
+            models={highModels}
             folderSet={folderSet}
             onChange={onChangeHigh}
           />
           <LoraColumn
             title="Low noise LoRA"
             entries={lowLoras}
-            models={models}
+            models={lowModels}
             folderSet={folderSet}
             onChange={onChangeLow}
           />
