@@ -8,6 +8,8 @@ const VRAM_APP_ROW_FALLBACK_PX = 22
 
 interface Props {
   device: string
+  /** When false, pause polling (hidden generate tab stays mounted). */
+  active?: boolean
 }
 
 function clampPercent(value: number): number {
@@ -69,7 +71,7 @@ function Meter({
   )
 }
 
-export function ResourceMonitorPane({ device }: Props) {
+export function ResourceMonitorPane({ device, active = true }: Props) {
   const [stats, setStats] = useState<ResourceStats | null>(null)
   const [error, setError] = useState<string | null>(null)
   const [killingPid, setKillingPid] = useState<number | null>(null)
@@ -77,6 +79,7 @@ export function ResourceMonitorPane({ device }: Props) {
   const appListRef = useRef<HTMLUListElement | null>(null)
 
   useEffect(() => {
+    if (!active) return
     let cancelled = false
 
     const poll = async () => {
@@ -97,7 +100,7 @@ export function ResourceMonitorPane({ device }: Props) {
       cancelled = true
       window.clearInterval(id)
     }
-  }, [device])
+  }, [device, active])
 
   useEffect(() => {
     const el = appListRef.current

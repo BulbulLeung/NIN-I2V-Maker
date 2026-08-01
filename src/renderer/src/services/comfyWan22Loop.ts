@@ -1,6 +1,7 @@
 /**
  * Wan2.2 Loop workflow API graph (I2V / FLF2V / WanFunInpaint).
- * Mirrors generation path of Wan22 Video(Loop) Settings subgraph — no Interpolation / Upscale / Mini Meme.
+ * Mirrors generation path of Wan22 Video(Loop) Settings subgraph —
+ * optional Color Match after VAE decode; no Interpolation / Upscale / Mini Meme.
  */
 
 import {
@@ -40,7 +41,8 @@ export const WAN22_NODE = {
   samplerLow: '15',
   vaeDecode: '16',
   createVideo: '17',
-  saveVideo: '18'
+  saveVideo: '18',
+  colorMatch: '19'
 } as const
 
 export interface ComfyWan22LoopParams {
@@ -85,11 +87,15 @@ export interface ComfyWan22LoopParams {
   videoCodec?: VideoSaveCodec
   videoBitDepth?: VideoSaveBitDepth
   videoCrf?: number
+  /** Match decoded frames to start image colors (NINI2VColorMatch). */
+  useColorMatch?: boolean
 }
 
 export interface VideoNodeCaps {
   /** Prefer NIN custom node — direct multi-codec encode from IMAGE frames. */
   hasNinSaveVideo: boolean
+  /** NINI2VColorMatch after VAE decode. */
+  hasNinColorMatch: boolean
   createHasBitDepth: boolean
   saveHasFormat: boolean
   saveHasCodec: boolean
@@ -254,6 +260,7 @@ function extractComboOptions(
 export async function probeVideoNodeCaps(baseUrl: string): Promise<VideoNodeCaps> {
   const defaults: VideoNodeCaps = {
     hasNinSaveVideo: false,
+    hasNinColorMatch: false,
     createHasBitDepth: false,
     saveHasFormat: true,
     saveHasCodec: true,
@@ -265,8 +272,9 @@ export async function probeVideoNodeCaps(baseUrl: string): Promise<VideoNodeCaps
   }
   try {
     const base = baseUrl.replace(/\/$/, '')
-    const [ninRes, createRes, saveRes] = await Promise.all([
+    const [ninRes, colorRes, createRes, saveRes] = await Promise.all([
       comfyHttp(`${base}/object_info/NINI2VSaveVideo`, { timeoutMs: 15_000 }),
+      comfyHttp(`${base}/object_info/NINI2VColorMatch`, { timeoutMs: 15_000 }),
       comfyHttp(`${base}/object_info/CreateVideo`, { timeoutMs: 15_000 }),
       comfyHttp(`${base}/object_info/SaveVideo`, { timeoutMs: 15_000 })
     ])
@@ -281,6 +289,14 @@ export async function probeVideoNodeCaps(baseUrl: string): Promise<VideoNodeCaps
           defaults.codecOptions = codecInfo.options
           defaults.formatOptions = formatInfo.options
         }
+      } catch {
+        /* ignore */
+      }
+    }
+    if (colorRes.ok && colorRes.text) {
+      try {
+        const parsed = JSON.parse(colorRes.text) as Record<string, unknown>
+        if (parsed.NINI2VColorMatch) defaults.hasNinColorMatch = true
       } catch {
         /* ignore */
       }
@@ -341,12 +357,16 @@ function pickFormat(p: ComfyWan22LoopParams, caps?: VideoNodeCaps): string {
   return pickFromOptions(wanted, caps?.formatOptions ?? null, ['auto', 'mp4'])
 }
 
+function imagesSourceNode(p: ComfyWan22LoopParams): string {
+  return p.useColorMatch ? WAN22_NODE.colorMatch : WAN22_NODE.vaeDecode
+}
+
 function buildNinSaveVideoInputs(p: ComfyWan22LoopParams, caps?: VideoNodeCaps): Record<string, unknown> {
   const format = pickFormat(p, caps)
   const codec = pickCodec(p, caps)
   const crf = Math.min(63, Math.max(0, Math.round(p.videoCrf ?? 23)))
   return {
-    images: [WAN22_NODE.vaeDecode, 0],
+    images: [imagesSourceNode(p), 0],
     fps: p.fps,
     filename_prefix: p.savePrefix || prefixForMode(p.mode),
     format,
@@ -361,7 +381,7 @@ function buildCreateVideoInputs(
   caps?: VideoNodeCaps
 ): Record<string, unknown> {
   const inputs: Record<string, unknown> = {
-    images: [WAN22_NODE.vaeDecode, 0],
+    images: [imagesSourceNode(p), 0],
     fps: p.fps
   }
   if (caps?.createHasBitDepth) {
@@ -399,7 +419,7 @@ function buildSaveVideoInputs(
 
 /**
  * Build API prompt graph aligned with Wan22 Loop generation (dual UNET + dual KSampler).
- * Post-processing (interp / upscale / mini meme) is omitted by design.
+ * Optional Color Match after VAE decode. Interp / upscale / mini meme remain omitted.
  */
 export function buildWan22LoopWorkflow(
   p: ComfyWan22LoopParams,
@@ -511,6 +531,17 @@ export function buildWan22LoopWorkflow(
       inputs: {
         samples: [WAN22_NODE.samplerLow, 0],
         vae: [WAN22_NODE.vae, 0]
+      }
+    }
+  }
+
+  if (p.useColorMatch) {
+    graph[WAN22_NODE.colorMatch] = {
+      class_type: 'NINI2VColorMatch',
+      inputs: {
+        image_ref: [WAN22_NODE.startImage, 0],
+        image_target: [WAN22_NODE.vaeDecode, 0],
+        strength: 1.0
       }
     }
   }
@@ -726,6 +757,7 @@ function describeNode(nodeId: string | null | undefined): string {
     [WAN22_NODE.samplerHigh]: 'High-noise sampling',
     [WAN22_NODE.samplerLow]: 'Low-noise sampling',
     [WAN22_NODE.vaeDecode]: 'VAE decode',
+    [WAN22_NODE.colorMatch]: 'Color match to start image',
     [WAN22_NODE.createVideo]: 'Create video',
     [WAN22_NODE.saveVideo]: 'Save video (direct encode)'
   }
@@ -851,6 +883,11 @@ export async function generateWan22LoopWithComfy(
   if (!caps.hasNinSaveVideo) {
     throw new Error(
       'NINI2VSaveVideo custom node not loaded. Stop ComfyUI and Start again so NIN custom nodes can install (direct H265/AV1/VP9/ProRes encode).'
+    )
+  }
+  if (params.useColorMatch && !caps.hasNinColorMatch) {
+    throw new Error(
+      'NINI2VColorMatch custom node not loaded. Stop ComfyUI and Start again so NIN custom nodes can install (Color Match).'
     )
   }
   const workflow = buildWan22LoopWorkflow({ ...params, seed }, caps)

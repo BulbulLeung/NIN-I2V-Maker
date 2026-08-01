@@ -26,6 +26,7 @@ import {
 } from './pythonEnv'
 import { getResourceStats, killProcessByPid } from './resourceStats'
 import { probeVideoFile, type VideoProbeInfo } from './videoProbe'
+import { writeVideoGalleryMeta } from './videoGalleryMeta'
 
 const execFileAsync = promisify(execFile)
 
@@ -83,6 +84,7 @@ interface SharedComfyDraft {
   videoBitDepth: number
   videoCrf: number
   useSageAttention: boolean
+  useColorMatch: boolean
 }
 
 interface ExtraLoraEntry {
@@ -99,6 +101,7 @@ interface VideoGenerateParams {
   cfg: number
   cfgHigh: number
   seed: number
+  batchCount: number
   width: number
   height: number
   resolutionPreset: string
@@ -200,7 +203,8 @@ const DEFAULT_SHARED_COMFY: SharedComfyDraft = {
   videoCodec: 'h264',
   videoBitDepth: 8,
   videoCrf: 23,
-  useSageAttention: true
+  useSageAttention: true,
+  useColorMatch: true
 }
 
 const DEFAULT_VIDEO_PARAMS: VideoGenerateParams = {
@@ -210,6 +214,7 @@ const DEFAULT_VIDEO_PARAMS: VideoGenerateParams = {
   cfg: 1,
   cfgHigh: 5,
   seed: -1,
+  batchCount: 1,
   width: 544,
   height: 960,
   resolutionPreset: '540p',
@@ -371,7 +376,11 @@ function normalizeSharedComfy(raw: unknown): SharedComfyDraft {
     useSageAttention:
       typeof o.useSageAttention === 'boolean'
         ? o.useSageAttention
-        : DEFAULT_SHARED_COMFY.useSageAttention
+        : DEFAULT_SHARED_COMFY.useSageAttention,
+    useColorMatch:
+      typeof o.useColorMatch === 'boolean'
+        ? o.useColorMatch
+        : DEFAULT_SHARED_COMFY.useColorMatch
   }
 }
 
@@ -389,6 +398,7 @@ function normalizeVideoParams(raw: unknown, defaults: VideoGenerateParams): Vide
     cfg: numField(o.cfg, defaults.cfg),
     cfgHigh: numField(o.cfgHigh, defaults.cfgHigh),
     seed: numField(o.seed, defaults.seed),
+    batchCount: Math.min(100, Math.max(1, Math.round(numField(o.batchCount, defaults.batchCount)))),
     width: numField(o.width, defaults.width),
     height: numField(o.height, defaults.height),
     resolutionPreset:
@@ -1287,7 +1297,7 @@ app.whenReady().then(async () => {
     'gallery:saveVideo',
     async (
       _event,
-      opts: { sourcePath: string; outputFolder: string; fileName?: string }
+      opts: { sourcePath: string; outputFolder: string; fileName?: string; seed?: number }
     ): Promise<{ ok: boolean; path?: string; dir?: string; error?: string }> => {
       const sourcePath = (opts?.sourcePath || '').trim()
       const outputFolder = (opts?.outputFolder || '').trim()
@@ -1304,9 +1314,14 @@ app.whenReady().then(async () => {
           .replace(/[-:]/g, '')
           .replace(/\.\d+Z$/, 'Z')
           .replace('T', '_')
+        const seedNum =
+          typeof opts?.seed === 'number' && Number.isFinite(opts.seed)
+            ? Math.floor(opts.seed)
+            : null
+        const seedSuffix = seedNum != null ? `_seed${seedNum}` : ''
         const safeBase =
           (opts?.fileName || '').trim().replace(/[<>:"/\\|?*\x00-\x1f]+/g, '_') ||
-          `i2v_${stamp}`
+          `i2v_${stamp}${seedSuffix}`
         const baseName = safeBase.toLowerCase().endsWith(ext.toLowerCase())
           ? safeBase
           : `${safeBase}${ext}`
@@ -1319,6 +1334,13 @@ app.whenReady().then(async () => {
           await copyFile(sourcePath, dest)
         } catch {
           copyFileSync(sourcePath, dest)
+        }
+        if (seedNum != null) {
+          try {
+            await writeVideoGalleryMeta(dest, { seed: seedNum })
+          } catch {
+            /* file still saved; seed recoverable from filename */
+          }
         }
         return { ok: true, path: dest, dir: outputFolder }
       } catch (err) {

@@ -28,6 +28,11 @@ export interface SharedComfyDraft {
   videoCrf: number
   /** Launch ComfyUI with --use-sage-attention when true. */
   useSageAttention: boolean
+  /**
+   * After VAE decode, match video frame colors to the start image (Reinhard LAB).
+   * Reduces VAE color shift vs the source still.
+   */
+  useColorMatch: boolean
 }
 
 export type VideoSaveFormat = 'auto' | 'mp4' | 'webm' | 'mkv'
@@ -96,6 +101,8 @@ export interface VideoGenerateParams {
   cfg: number
   cfgHigh: number
   seed: number
+  /** How many videos to generate per Generate click (1 = single). */
+  batchCount: number
   /** Cached pixels from last resolve (display / fallback). */
   width: number
   height: number
@@ -162,7 +169,8 @@ export const DEFAULT_SHARED_COMFY: SharedComfyDraft = {
   videoCodec: 'h264',
   videoBitDepth: 8,
   videoCrf: DEFAULT_VIDEO_CRF,
-  useSageAttention: true
+  useSageAttention: true,
+  useColorMatch: true
 }
 
 export const DEFAULT_VIDEO_PARAMS: VideoGenerateParams = {
@@ -172,6 +180,7 @@ export const DEFAULT_VIDEO_PARAMS: VideoGenerateParams = {
   cfg: 1,
   cfgHigh: 5,
   seed: -1,
+  batchCount: 1,
   width: 544,
   height: 960,
   resolutionPreset: '540p',
@@ -286,6 +295,7 @@ function normalizeVideoParams(
     cfg: num(r.cfg, defaults.cfg, 0, 30),
     cfgHigh: num(r.cfgHigh, defaults.cfgHigh, 0, 30),
     seed: num(r.seed, defaults.seed),
+    batchCount: num(r.batchCount, defaults.batchCount, 1, 100),
     width: num(r.width, defaults.width, 16, 4096),
     height: num(r.height, defaults.height, 16, 4096),
     resolutionPreset: str(r.resolutionPreset, defaults.resolutionPreset) || defaults.resolutionPreset,
@@ -357,7 +367,11 @@ export function normalizeSharedComfyDraft(raw: unknown): SharedComfyDraft {
     useSageAttention:
       typeof r.useSageAttention === 'boolean'
         ? r.useSageAttention
-        : DEFAULT_SHARED_COMFY.useSageAttention
+        : DEFAULT_SHARED_COMFY.useSageAttention,
+    useColorMatch:
+      typeof r.useColorMatch === 'boolean'
+        ? r.useColorMatch
+        : DEFAULT_SHARED_COMFY.useColorMatch
   }
 }
 

@@ -1,6 +1,7 @@
 """
-NIN I2V Maker — direct multi-codec video save (no H264 intermediate).
-Encodes IMAGE batches straight to H264 / H265 / AV1 / VP9 / ProRes via PyAV.
+NIN I2V Maker — ComfyUI custom nodes.
+- NINI2VSaveVideo: encode IMAGE batches to H264 / H265 / AV1 / VP9 / ProRes via PyAV
+- NINI2VColorMatch: Reinhard LAB color match (start image → decoded frames)
 """
 
 from __future__ import annotations
@@ -200,5 +201,152 @@ class NINI2VSaveVideo:
         return {"ui": {"videos": results}}
 
 
+def _rgb_to_lab(rgb: torch.Tensor) -> torch.Tensor:
+    """RGB [..., 3] in 0–1 → LAB (D65 / sRGB)."""
+    rgb = rgb.clamp(0.0, 1.0)
+    # sRGB → linear
+    mask = rgb > 0.04045
+    linear = torch.where(mask, ((rgb + 0.055) / 1.055).pow(2.4), rgb / 12.92)
+    # linear RGB → XYZ (sRGB D65)
+    m = torch.tensor(
+        [
+            [0.4124564, 0.3575761, 0.1804375],
+            [0.2126729, 0.7151522, 0.0721750],
+            [0.0193339, 0.1191920, 0.9503041],
+        ],
+        device=rgb.device,
+        dtype=rgb.dtype,
+    )
+    xyz = torch.matmul(linear, m.T)
+    # XYZ → Lab (D65 white)
+    white = torch.tensor([0.95047, 1.0, 1.08883], device=rgb.device, dtype=rgb.dtype)
+    xyz_n = xyz / white
+    eps = 216.0 / 24389.0
+    kappa = 24389.0 / 27.0
+    f = torch.where(xyz_n > eps, xyz_n.pow(1.0 / 3.0), (kappa * xyz_n + 16.0) / 116.0)
+    L = 116.0 * f[..., 1] - 16.0
+    a = 500.0 * (f[..., 0] - f[..., 1])
+    b = 200.0 * (f[..., 1] - f[..., 2])
+    return torch.stack([L, a, b], dim=-1)
+
+
+def _lab_to_rgb(lab: torch.Tensor) -> torch.Tensor:
+    """LAB → RGB [..., 3] in 0–1 (D65 / sRGB)."""
+    L = lab[..., 0]
+    a = lab[..., 1]
+    b = lab[..., 2]
+    fy = (L + 16.0) / 116.0
+    fx = a / 500.0 + fy
+    fz = fy - b / 200.0
+    eps = 216.0 / 24389.0
+    kappa = 24389.0 / 27.0
+
+    def f_inv(t: torch.Tensor) -> torch.Tensor:
+        t3 = t.pow(3)
+        return torch.where(t3 > eps, t3, (116.0 * t - 16.0) / kappa)
+
+    white = torch.tensor([0.95047, 1.0, 1.08883], device=lab.device, dtype=lab.dtype)
+    xyz = torch.stack([f_inv(fx), f_inv(fy), f_inv(fz)], dim=-1) * white
+    m_inv = torch.tensor(
+        [
+            [3.2404542, -1.5371385, -0.4985314],
+            [-0.9692660, 1.8760108, 0.0415560],
+            [0.0556434, -0.2040259, 1.0572252],
+        ],
+        device=lab.device,
+        dtype=lab.dtype,
+    )
+    linear = torch.matmul(xyz, m_inv.T).clamp(0.0, None)
+    # linear → sRGB
+    mask = linear > 0.0031308
+    rgb = torch.where(mask, 1.055 * linear.pow(1.0 / 2.4) - 0.055, 12.92 * linear)
+    return rgb.clamp(0.0, 1.0)
+
+
+def _resize_image_bhwc(img: torch.Tensor, height: int, width: int) -> torch.Tensor:
+    """Nearest/bilinear resize IMAGE tensor [B,H,W,C] → [B,height,width,C]."""
+    if img.shape[1] == height and img.shape[2] == width:
+        return img
+    # NCHW for interpolate
+    nchw = img.movedim(-1, 1)
+    out = torch.nn.functional.interpolate(
+        nchw, size=(height, width), mode="bilinear", align_corners=False
+    )
+    return out.movedim(1, -1)
+
+
+class NINI2VColorMatch:
+    """
+    Reinhard et al. color transfer in LAB: match target frames to a reference still.
+    Typical I2V use: image_ref = start image, image_target = VAE-decoded video frames.
+    """
+
+    @classmethod
+    def INPUT_TYPES(cls):
+        return {
+            "required": {
+                "image_ref": ("IMAGE",),
+                "image_target": ("IMAGE",),
+                "strength": (
+                    "FLOAT",
+                    {"default": 1.0, "min": 0.0, "max": 1.0, "step": 0.01},
+                ),
+            }
+        }
+
+    RETURN_TYPES = ("IMAGE",)
+    RETURN_NAMES = ("image",)
+    FUNCTION = "color_match"
+    CATEGORY = "NIN I2V Maker"
+    DESCRIPTION = (
+        "Match target frame colors to a reference image (Reinhard LAB). "
+        "Use the start still as image_ref after VAE decode."
+    )
+
+    def color_match(
+        self,
+        image_ref: torch.Tensor,
+        image_target: torch.Tensor,
+        strength: float,
+    ):
+        if image_target is None or image_target.shape[0] == 0:
+            raise ValueError("NINI2VColorMatch: image_target is empty")
+        if image_ref is None or image_ref.shape[0] == 0:
+            raise ValueError("NINI2VColorMatch: image_ref is empty")
+
+        strength = float(max(0.0, min(1.0, strength)))
+        if strength <= 0.0:
+            return (image_target,)
+
+        device = image_target.device
+        dtype = image_target.dtype
+        th, tw = int(image_target.shape[1]), int(image_target.shape[2])
+
+        # Use first ref frame; resize to target resolution
+        ref = image_ref[0:1].to(device=device, dtype=dtype)
+        ref = _resize_image_bhwc(ref, th, tw)
+
+        ref_lab = _rgb_to_lab(ref)
+        # Spatial mean/std of reference (1,1,1,3)
+        ref_flat = ref_lab.reshape(1, -1, 3)
+        ref_mean = ref_flat.mean(dim=1, keepdim=True).reshape(1, 1, 1, 3)
+        ref_std = ref_flat.std(dim=1, keepdim=True, unbiased=False).reshape(1, 1, 1, 3).clamp_min(1e-5)
+
+        tgt = image_target.to(device=device, dtype=dtype)
+        tgt_lab = _rgb_to_lab(tgt)
+        # Per-frame mean/std over H*W
+        b = tgt_lab.shape[0]
+        tgt_flat = tgt_lab.reshape(b, -1, 3)
+        tgt_mean = tgt_flat.mean(dim=1, keepdim=True).reshape(b, 1, 1, 3)
+        tgt_std = tgt_flat.std(dim=1, keepdim=True, unbiased=False).reshape(b, 1, 1, 3).clamp_min(1e-5)
+
+        matched_lab = (tgt_lab - tgt_mean) * (ref_std / tgt_std) + ref_mean
+        matched = _lab_to_rgb(matched_lab)
+        out = tgt * (1.0 - strength) + matched * strength
+        return (out.clamp(0.0, 1.0),)
+
+
 NODE_CLASS_MAPPINGS["NINI2VSaveVideo"] = NINI2VSaveVideo
+NODE_CLASS_MAPPINGS["NINI2VColorMatch"] = NINI2VColorMatch
 NODE_DISPLAY_NAME_MAPPINGS["NINI2VSaveVideo"] = "NIN I2V Save Video"
+NODE_DISPLAY_NAME_MAPPINGS["NINI2VColorMatch"] = "NIN I2V Color Match"

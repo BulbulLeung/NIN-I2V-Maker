@@ -9,7 +9,6 @@ import type {
   VideoSaveFormat
 } from '../types'
 import {
-  LANGUAGES,
   VIDEO_CRF_MAX,
   VIDEO_CRF_MIN,
   VIDEO_SAVE_BIT_DEPTH_OPTIONS,
@@ -155,7 +154,6 @@ export function SettingsDialog({ settings, open, onClose, onSave }: Props) {
       lmStudioBaseUrl: draft.lmStudioBaseUrl,
       ollamaBaseUrl: draft.ollamaBaseUrl,
       model: draft.model,
-      targetLanguage: draft.targetLanguage,
       promptPresets: draft.promptPresets,
       activePromptPresetId: draft.activePromptPresetId,
       uiGpuMode: draft.uiGpuMode,
@@ -298,20 +296,6 @@ export function SettingsDialog({ settings, open, onClose, onSave }: Props) {
                     Test
                   </button>
                 </div>
-              </label>
-
-              <label className="field">
-                <span>Target language (translation)</span>
-                <select
-                  value={draft.targetLanguage}
-                  onChange={(e) => patch({ targetLanguage: e.target.value })}
-                >
-                  {LANGUAGES.map((lang) => (
-                    <option key={lang.code} value={lang.code}>
-                      {lang.label}
-                    </option>
-                  ))}
-                </select>
               </label>
             </>
           )}
@@ -622,6 +606,27 @@ export function SettingsDialog({ settings, open, onClose, onSave }: Props) {
                 Starts ComfyUI with <code>--use-sage-attention</code> for faster sampling. Requires
                 sageattention in the Python env (see UI tab). Changing this restarts ComfyUI on next
                 Start / Generate.
+              </p>
+
+              <div
+                className={`generate-aspect-toggle lora-toggle${gd.useColorMatch ? ' is-on' : ''}`}
+              >
+                <span className="lora-toggle-label">Color Match</span>
+                <button
+                  type="button"
+                  className="lora-switch"
+                  role="switch"
+                  aria-checked={gd.useColorMatch}
+                  aria-label="Color Match"
+                  onClick={() => patchSharedComfy({ useColorMatch: !gd.useColorMatch })}
+                >
+                  <span className="lora-switch-knob" />
+                </button>
+              </div>
+              <p className="field-hint">
+                After VAE decode, match each frame&apos;s colors to the start image (Reinhard LAB).
+                Reduces color shift between the source still and the generated video. Restart ComfyUI
+                (Stop → Start) after updating the app so the Color Match custom node loads.
               </p>
             </>
           )}

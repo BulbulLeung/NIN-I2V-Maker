@@ -1,5 +1,6 @@
 import { basename, extname } from 'path'
 import { open, stat } from 'fs/promises'
+import { resolveVideoSeed } from './videoGalleryMeta'
 
 export interface VideoProbeInfo {
   path: string
@@ -10,6 +11,7 @@ export interface VideoProbeInfo {
   codec: string | null
   bitDepth: number | null
   container: string | null
+  seed: number | null
 }
 
 const FOURCC_CODEC: Record<string, string> = {
@@ -342,7 +344,14 @@ export async function probeVideoFile(filePath: string): Promise<VideoProbeInfo> 
     height: null,
     codec: null,
     bitDepth: null,
-    container: containerFromExt(ext)
+    container: containerFromExt(ext),
+    seed: null
+  }
+
+  try {
+    info.seed = await resolveVideoSeed(filePath)
+  } catch {
+    info.seed = null
   }
 
   try {

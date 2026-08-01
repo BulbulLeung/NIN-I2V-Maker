@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import type {
   AppSettings,
   Flf2vGenerateDraft,
@@ -22,6 +22,7 @@ import {
   probeComfyOnline
 } from '../services/comfyWan22Loop'
 import { parentDir } from '../services/comfyI2v'
+import { useArrowListNav } from '../hooks/useArrowListNav'
 import { ResourceMonitorPane } from './ResourceMonitorPane'
 import { ExtraLoraDialog } from './ExtraLoraDialog'
 import { SearchableSelect } from './SearchableSelect'
@@ -41,6 +42,8 @@ type Panel = 'i2v' | 'flf2v' | 'loop'
 
 interface Props {
   panel: Panel
+  /** False while another tab is shown (view stays mounted so Generate/Abort state survives). */
+  active?: boolean
   settings: AppSettings
   sharedComfy: SharedComfyDraft
   draft: I2vGenerateDraft | Flf2vGenerateDraft
@@ -70,6 +73,7 @@ interface VideoMeta {
   codec: string | null
   bitDepth: number | null
   container: string | null
+  seed: number | null
 }
 
 function formatFileSize(bytes: number): string {
@@ -81,6 +85,7 @@ function formatFileSize(bytes: number): string {
 
 function formatVideoMetaLine(meta: VideoMeta): string {
   const parts: string[] = []
+  if (meta.seed != null) parts.push(`seed ${meta.seed}`)
   if (meta.width && meta.height) parts.push(`${meta.width}×${meta.height}`)
   if (meta.sizeBytes > 0) parts.push(formatFileSize(meta.sizeBytes))
   if (meta.codec) {
@@ -132,6 +137,7 @@ function isFlfDraft(d: I2vGenerateDraft | Flf2vGenerateDraft): d is Flf2vGenerat
 
 export function GenerateView({
   panel,
+  active = true,
   settings,
   sharedComfy,
   draft,
@@ -147,6 +153,9 @@ export function GenerateView({
   const [comfyBusy, setComfyBusy] = useState(false)
   const [generating, setGenerating] = useState(false)
   const [generateElapsedSec, setGenerateElapsedSec] = useState(0)
+  const [batchProgress, setBatchProgress] = useState<{ current: number; total: number } | null>(
+    null
+  )
   const [videos, setVideos] = useState<GalleryVideo[]>([])
   const [selectedVideo, setSelectedVideo] = useState<string | null>(null)
   const [videoMeta, setVideoMeta] = useState<VideoMeta | null>(null)
@@ -163,6 +172,8 @@ export function GenerateView({
   const [imagePicker, setImagePicker] = useState<null | 'start' | 'end'>(null)
 
   const abortRef = useRef<AbortController | null>(null)
+  const galleryRef = useRef<HTMLDivElement | null>(null)
+  const imagePickerListRef = useRef<HTMLDivElement | null>(null)
   const draftRef = useRef(draft)
   draftRef.current = draft
   const sharedRef = useRef(sharedComfy)
@@ -178,6 +189,56 @@ export function GenerateView({
     },
     [onDraftChange]
   )
+
+  const videoPaths = useMemo(() => videos.map((v) => v.path), [videos])
+  const promptImagePaths = useMemo(() => promptImages.map((img) => img.path), [promptImages])
+
+  const selectGalleryVideo = useCallback((path: string) => {
+    setSelectedVideo(path)
+  }, [])
+
+  const selectPickerImage = useCallback(
+    (path: string) => {
+      if (imagePicker === 'end') {
+        patchDraft({ endImagePath: path })
+      } else {
+        onSelectStartImage(path)
+      }
+    },
+    [imagePicker, onSelectStartImage, patchDraft]
+  )
+
+  const ignoreWhenOtherModal = useCallback((e: KeyboardEvent) => {
+    if (document.querySelector('.settings-modal')) return true
+    const t = e.target
+    if (t instanceof Element && t.closest('.lora-popup-modal')) return true
+    return false
+  }, [])
+
+  useArrowListNav({
+    enabled: active && !imagePicker && !loraPopupOpen && videoPaths.length > 0,
+    items: videoPaths,
+    selectedId: selectedVideo,
+    onSelect: selectGalleryVideo,
+    columns: 1,
+    containerRef: galleryRef,
+    shouldIgnore: ignoreWhenOtherModal
+  })
+
+  const pickerSelectedId =
+    imagePicker === 'end'
+      ? (draft as Flf2vGenerateDraft).endImagePath || null
+      : startImagePath || draft.selectedImagePath || null
+
+  useArrowListNav({
+    enabled: active && Boolean(imagePicker) && promptImagePaths.length > 0,
+    items: promptImagePaths,
+    selectedId: pickerSelectedId,
+    onSelect: selectPickerImage,
+    columns: 'auto',
+    containerRef: imagePickerListRef,
+    shouldIgnore: ignoreWhenOtherModal
+  })
 
   // Keep draft start image + prompt aligned with Prompt tab.
   useEffect(() => {
@@ -352,7 +413,8 @@ export function GenerateView({
             height: res.info.height,
             codec: res.info.codec,
             bitDepth: res.info.bitDepth,
-            container: res.info.container
+            container: res.info.container,
+            seed: res.info.seed ?? null
           })
         } else {
           const fallback = videos.find((v) => v.path === selectedVideo)
@@ -365,7 +427,8 @@ export function GenerateView({
                   height: null,
                   codec: null,
                   bitDepth: null,
-                  container: null
+                  container: null,
+                  seed: null
                 }
               : null
           )
@@ -380,6 +443,7 @@ export function GenerateView({
   }, [selectedVideo, videos])
 
   useEffect(() => {
+    if (!active && !generating) return
     let cancelled = false
     const tick = async () => {
       try {
@@ -395,7 +459,7 @@ export function GenerateView({
       cancelled = true
       window.clearInterval(id)
     }
-  }, [])
+  }, [active, generating])
 
   const ensureComfyOnline = async (): Promise<boolean> => {
     if (await probeComfyOnline()) {
@@ -480,6 +544,7 @@ export function GenerateView({
       /* ignore */
     }
     setGenerating(false)
+    setBatchProgress(null)
     onStatus('Generation aborted')
   }
 
@@ -494,6 +559,7 @@ export function GenerateView({
     const startPath = startImageRef.current.trim() || d.selectedImagePath.trim()
     const prompt = d.prompt.trim() || promptTextRef.current.trim()
     const endPath = isLoop ? startPath : (flf?.endImagePath || '').trim()
+    const batchTotal = Math.min(100, Math.max(1, Math.round(Number(d.batchCount) || 1)))
 
     if (!startPath) {
       onStatus(
@@ -572,6 +638,7 @@ export function GenerateView({
     const ac = new AbortController()
     abortRef.current = ac
     setGenerateElapsedSec(0)
+    setBatchProgress({ current: 1, total: batchTotal })
     setGenerating(true)
     const startedAt = Date.now()
 
@@ -589,7 +656,8 @@ export function GenerateView({
 
     try {
       report(
-        `Prepare ${modeLabel}: ${width}×${height}, ${lengthFrames} frames @ ${d.fps}fps, steps ${d.steps} (refiner ${d.refinerStep})`
+        `Prepare ${modeLabel}: ${width}×${height}, ${lengthFrames} frames @ ${d.fps}fps, steps ${d.steps} (refiner ${d.refinerStep})` +
+          (batchTotal > 1 ? `, batch ×${batchTotal}` : '')
       )
 
       report(`Uploading start image… (${basenamePath(startPath)})`)
@@ -614,105 +682,127 @@ export function GenerateView({
         report('No end frame required (I2V)')
       }
 
-      report(
-        `ComfyUI generate: seed ${d.seed < 0 ? 'random' : d.seed}, sampler ${d.sampler}/${d.scheduler}` +
-          (useSpeedLora ? ', Speed LoRA on' : '')
-      )
-      const result = await generateWan22LoopWithComfy(
-        {
-          mode,
-          prompt,
-          negative: d.negative,
-          steps: d.steps,
-          refinerStep: d.refinerStep,
-          cfg: d.cfg,
-          cfgHigh: d.cfgHigh,
-          seed: d.seed,
-          width,
-          height,
-          seconds: d.seconds,
-          fps: d.fps,
-          shift: d.shift,
-          sampler: d.sampler,
-          scheduler: d.scheduler,
-          highDitName: basenamePath(s.highDitPath),
-          lowDitName: basenamePath(s.lowDitPath),
-          vaeName: basenamePath(s.vaePath),
-          clipName: basenamePath(s.clipPath),
-          loraHighName: speedHighOn ? basenamePath(d.loraHighPath) : undefined,
-          loraLowName: speedLowOn ? basenamePath(d.loraLowPath) : undefined,
-          loraHighStrength: d.loraHighStrength,
-          loraLowStrength: d.loraLowStrength,
-          useLightningLora: useSpeedLora,
-          extraLorasHigh: (d.extraLorasHigh || [])
-            .filter((e) => e.enabled !== false && e.path.trim())
-            .map((e) => ({
-              name: basenamePath(e.path),
-              strength: e.strength
-            })),
-          extraLorasLow: (d.extraLorasLow || [])
-            .filter((e) => e.enabled !== false && e.path.trim())
-            .map((e) => ({
-              name: basenamePath(e.path),
-              strength: e.strength
-            })),
-          uploadedStartImage: uploadedStart.name,
-          uploadedStartSubfolder: uploadedStart.subfolder,
-          uploadedEndImage: uploadedEnd?.name,
-          uploadedEndSubfolder: uploadedEnd?.subfolder,
-          savePrefix: isLoop
-            ? mode === 'wanfun_inpaint'
-              ? 'loop/Wan2.2_loop_inpaint'
-              : 'loop/Wan2.2_loop'
-            : undefined,
-          videoFormat: s.videoFormat,
-          videoCodec: s.videoCodec,
-          videoBitDepth: s.videoBitDepth,
-          videoCrf: s.videoCrf
-        },
-        {
-          signal: ac.signal,
-          baseUrl: COMFY_BASE_URL,
-          onProgress: (msg) => {
-            if (ac.signal.aborted) return
-            onStatus(msg, false, { sticky: true })
+      const seedsUsed: number[] = []
+      let lastSavedPath: string | null = null
+
+      for (let batchIndex = 0; batchIndex < batchTotal; batchIndex++) {
+        if (ac.signal.aborted) return
+
+        setBatchProgress({ current: batchIndex + 1, total: batchTotal })
+        // First run uses draft seed; later runs always random (-1).
+        const runSeed = batchIndex === 0 ? d.seed : -1
+        const batchTag = batchTotal > 1 ? `[${batchIndex + 1}/${batchTotal}] ` : ''
+
+        report(
+          `${batchTag}ComfyUI generate: seed ${runSeed < 0 ? 'random' : runSeed}, sampler ${d.sampler}/${d.scheduler}` +
+            (useSpeedLora ? ', Speed LoRA on' : '')
+        )
+        const result = await generateWan22LoopWithComfy(
+          {
+            mode,
+            prompt,
+            negative: d.negative,
+            steps: d.steps,
+            refinerStep: d.refinerStep,
+            cfg: d.cfg,
+            cfgHigh: d.cfgHigh,
+            seed: runSeed,
+            width,
+            height,
+            seconds: d.seconds,
+            fps: d.fps,
+            shift: d.shift,
+            sampler: d.sampler,
+            scheduler: d.scheduler,
+            highDitName: basenamePath(s.highDitPath),
+            lowDitName: basenamePath(s.lowDitPath),
+            vaeName: basenamePath(s.vaePath),
+            clipName: basenamePath(s.clipPath),
+            loraHighName: speedHighOn ? basenamePath(d.loraHighPath) : undefined,
+            loraLowName: speedLowOn ? basenamePath(d.loraLowPath) : undefined,
+            loraHighStrength: d.loraHighStrength,
+            loraLowStrength: d.loraLowStrength,
+            useLightningLora: useSpeedLora,
+            extraLorasHigh: (d.extraLorasHigh || [])
+              .filter((e) => e.enabled !== false && e.path.trim())
+              .map((e) => ({
+                name: basenamePath(e.path),
+                strength: e.strength
+              })),
+            extraLorasLow: (d.extraLorasLow || [])
+              .filter((e) => e.enabled !== false && e.path.trim())
+              .map((e) => ({
+                name: basenamePath(e.path),
+                strength: e.strength
+              })),
+            uploadedStartImage: uploadedStart.name,
+            uploadedStartSubfolder: uploadedStart.subfolder,
+            uploadedEndImage: uploadedEnd?.name,
+            uploadedEndSubfolder: uploadedEnd?.subfolder,
+            savePrefix: isLoop
+              ? mode === 'wanfun_inpaint'
+                ? 'loop/Wan2.2_loop_inpaint'
+                : 'loop/Wan2.2_loop'
+              : undefined,
+            videoFormat: s.videoFormat,
+            videoCodec: s.videoCodec,
+            videoBitDepth: s.videoBitDepth,
+            videoCrf: s.videoCrf,
+            useColorMatch: s.useColorMatch
+          },
+          {
+            signal: ac.signal,
+            baseUrl: COMFY_BASE_URL,
+            onProgress: (msg) => {
+              if (ac.signal.aborted) return
+              onStatus(`${batchTag}${msg}`, false, { sticky: true })
+            }
           }
+        )
+
+        if (ac.signal.aborted) return
+
+        seedsUsed.push(result.seed)
+        const videoRef = result.videos[0]
+        report(
+          `${batchTag}Resolve output… (${videoRef.subfolder ? `${videoRef.subfolder}/` : ''}${videoRef.filename})`
+        )
+        const resolved = await window.api.comfyResolveImagePath({
+          filename: videoRef.filename,
+          subfolder: videoRef.subfolder,
+          type: videoRef.type
+        })
+        if (!resolved.ok || !resolved.path) {
+          throw new Error(resolved.error || 'Could not resolve ComfyUI video path')
         }
-      )
 
-      if (ac.signal.aborted) return
-
-      const videoRef = result.videos[0]
-      report(
-        `Resolve output… (${videoRef.subfolder ? `${videoRef.subfolder}/` : ''}${videoRef.filename})`
-      )
-      const resolved = await window.api.comfyResolveImagePath({
-        filename: videoRef.filename,
-        subfolder: videoRef.subfolder,
-        type: videoRef.type
-      })
-      if (!resolved.ok || !resolved.path) {
-        throw new Error(resolved.error || 'Could not resolve ComfyUI video path')
+        report(`${batchTag}Save to gallery… → ${s.outputFolder.trim()}`)
+        const saved = await window.api.gallerySaveVideo({
+          sourcePath: resolved.path,
+          outputFolder: s.outputFolder.trim(),
+          seed: result.seed
+        })
+        if (!saved.ok || !saved.path) {
+          throw new Error(saved.error || 'Failed to save video to gallery')
+        }
+        lastSavedPath = saved.path
+        await refreshGallery()
+        setSelectedVideo(saved.path)
       }
 
-      report(`Save to gallery… → ${s.outputFolder.trim()}`)
-      const saved = await window.api.gallerySaveVideo({
-        sourcePath: resolved.path,
-        outputFolder: s.outputFolder.trim()
-      })
-      if (!saved.ok || !saved.path) {
-        throw new Error(saved.error || 'Failed to save video to gallery')
-      }
-
-      report('Refresh gallery…')
-      await refreshGallery()
-      setSelectedVideo(saved.path)
       const elapsed = formatElapsed(Date.now() - startedAt)
+      const seedSummary =
+        seedsUsed.length === 1
+          ? `seed ${seedsUsed[0]}`
+          : `seeds ${seedsUsed.join(', ')}`
       onStatus(
-        `Done — ${modeLabel}, seed ${result.seed}, ${result.length} frames, ${width}×${height}, ${elapsed}`,
+        `Done — ${modeLabel}, ${seedSummary}, ${lengthFrames} frames, ${width}×${height}` +
+          (batchTotal > 1 ? `, batch ${batchTotal}` : '') +
+          `, ${elapsed}`,
         false,
         { sticky: true }
       )
+      if (lastSavedPath) setSelectedVideo(lastSavedPath)
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err)
       if (msg === 'Generation cancelled') {
@@ -724,6 +814,7 @@ export function GenerateView({
       window.clearInterval(elapsedTimer)
       if (abortRef.current === ac) abortRef.current = null
       setGenerating(false)
+      setBatchProgress(null)
       setGenerateElapsedSec(0)
     }
   }
@@ -980,8 +1071,8 @@ export function GenerateView({
                 {numField('Refiner step', 'refinerStep', { min: 1, max: 100 })}
               </div>
               <div className="field-row-grid field-row-grid-3">
-                {numField('CFG-HIGH', 'cfgHigh', { step: 0.1, min: 0, max: 30 })}
-                {numField('CFG (low)', 'cfg', { step: 0.1, min: 0, max: 30 })}
+                {numField('CFG(high)', 'cfgHigh', { step: 0.1, min: 0, max: 30 })}
+                {numField('CFG(low)', 'cfg', { step: 0.1, min: 0, max: 30 })}
                 {numField('Shift', 'shift', { step: 0.1, min: 0, max: 20 })}
               </div>
               <label className="field">
@@ -1106,7 +1197,7 @@ export function GenerateView({
                   const selected = promptImages.find((img) => img.path === selectedPath)
                   if (promptImages.length === 0) {
                     return (
-                      <p className="field-hint">No images — open a folder in the Prompt tab.</p>
+                      <p className="field-hint">No images — add a folder from the toolbar.</p>
                     )
                   }
                   if (!selected) {
@@ -1144,7 +1235,7 @@ export function GenerateView({
                   {(() => {
                     if (promptImages.length === 0) {
                       return (
-                        <p className="field-hint">No images — open a folder in the Prompt tab.</p>
+                        <p className="field-hint">No images — add a folder from the toolbar.</p>
                       )
                     }
                     const selected = promptImages.find((img) => img.path === endImagePath)
@@ -1199,13 +1290,34 @@ export function GenerateView({
           </div>
 
           <div className="generate-actions">
+            <label className="generate-batch-field" title="Generate this many times. First uses Seed; later runs use random seed.">
+              <span>Batch</span>
+              <input
+                type="number"
+                min={1}
+                max={100}
+                step={1}
+                disabled={generating}
+                value={Number(draft.batchCount) || 1}
+                onChange={(e) => {
+                  const n = Math.round(Number(e.target.value))
+                  patchDraft({
+                    batchCount: Number.isFinite(n) ? Math.min(100, Math.max(1, n)) : 1
+                  })
+                }}
+              />
+            </label>
             {generating ? (
               <button
                 type="button"
                 className="danger lora-test-generate-btn"
                 onClick={() => void abortGenerate()}
               >
-                Abort · {generateElapsedSec} Sec
+                Abort
+                {batchProgress && batchProgress.total > 1
+                  ? ` · ${batchProgress.current}/${batchProgress.total}`
+                  : ''}{' '}
+                · {generateElapsedSec} Sec
               </button>
             ) : (
               <button
@@ -1265,11 +1377,30 @@ export function GenerateView({
                 />
                 {videoMeta ? (
                   <div className="generate-video-meta">
-                    <div className="generate-video-meta-name" title={videoMeta.name}>
-                      {videoMeta.name}
-                    </div>
-                    <div className="generate-video-meta-details">
-                      {formatVideoMetaLine(videoMeta)}
+                    <button
+                      type="button"
+                      className="generate-use-seed-btn"
+                      disabled={videoMeta.seed == null}
+                      title={
+                        videoMeta.seed != null
+                          ? `Copy seed ${videoMeta.seed} into Seed field`
+                          : 'No seed stored for this video'
+                      }
+                      onClick={() => {
+                        if (videoMeta.seed == null) return
+                        patchDraft({ seed: videoMeta.seed })
+                        onStatus(`Seed set to ${videoMeta.seed}`)
+                      }}
+                    >
+                      Use Seed
+                    </button>
+                    <div className="generate-video-meta-text">
+                      <div className="generate-video-meta-name" title={videoMeta.name}>
+                        {videoMeta.name}
+                      </div>
+                      <div className="generate-video-meta-details">
+                        {formatVideoMetaLine(videoMeta)}
+                      </div>
                     </div>
                   </div>
                 ) : null}
@@ -1285,7 +1416,7 @@ export function GenerateView({
             )}
           </div>
 
-          <div className="i2v-gallery">
+          <div className="i2v-gallery" ref={galleryRef}>
             {videos.length === 0 ? (
               <div className="i2v-gallery-empty">No videos</div>
             ) : (
@@ -1293,6 +1424,7 @@ export function GenerateView({
                 <button
                   key={v.path}
                   type="button"
+                  data-nav-id={v.path}
                   className={`i2v-gallery-item${v.path === selectedVideo ? ' active' : ''}`}
                   onClick={() => setSelectedVideo(v.path)}
                   title={v.name}
@@ -1318,7 +1450,7 @@ export function GenerateView({
         </section>
 
         <aside className="generate-monitor">
-          <ResourceMonitorPane device={monitorDevice} />
+          <ResourceMonitorPane device={monitorDevice} active={active} />
         </aside>
       </div>
 
@@ -1361,7 +1493,11 @@ export function GenerateView({
                 Close
               </button>
             </div>
-            <div className="generate-prompt-image-list generate-image-picker-grid" role="listbox">
+            <div
+              ref={imagePickerListRef}
+              className="generate-prompt-image-list generate-image-picker-grid"
+              role="listbox"
+            >
               {promptImages.map((img) => {
                 const activePath =
                   imagePicker === 'end'
@@ -1373,6 +1509,7 @@ export function GenerateView({
                     key={img.path}
                     type="button"
                     role="option"
+                    data-nav-id={img.path}
                     aria-selected={active}
                     className={`generate-prompt-image-item${active ? ' active' : ''}${img.hasCaption ? ' has-caption' : ''}`}
                     title={img.name}

@@ -32,6 +32,7 @@ export interface SharedComfyDraft {
   videoBitDepth: number
   videoCrf: number
   useSageAttention: boolean
+  useColorMatch: boolean
 }
 
 export interface ExtraLoraEntry {
@@ -48,6 +49,7 @@ export interface VideoGenerateParams {
   cfg: number
   cfgHigh: number
   seed: number
+  batchCount: number
   width: number
   height: number
   resolutionPreset: string
@@ -132,6 +134,7 @@ export interface GalleryVideoProbeInfo {
   codec: string | null
   bitDepth: number | null
   container: string | null
+  seed: number | null
 }
 
 const api = {
@@ -348,6 +351,7 @@ const api = {
     sourcePath: string
     outputFolder: string
     fileName?: string
+    seed?: number
   }): Promise<{ ok: boolean; path?: string; dir?: string; error?: string }> =>
     ipcRenderer.invoke('gallery:saveVideo', opts),
 

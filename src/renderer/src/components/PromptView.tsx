@@ -1,6 +1,7 @@
 import {
   useCallback,
   useEffect,
+  useMemo,
   useRef,
   useState,
   type CSSProperties,
@@ -9,6 +10,7 @@ import {
 import type { AppSettings, ImageItem } from '../types'
 import { LANGUAGES } from '../types'
 import { generateI2vPromptForImage } from '../services/promptGen'
+import { useArrowListNav } from '../hooks/useArrowListNav'
 import { useBidirectionalTranslate } from '../hooks/useBidirectionalTranslate'
 import {
   parseSidecarCaption,
@@ -18,20 +20,17 @@ import {
 
 interface Props {
   settings: AppSettings
+  /** False while another tab is shown (Prompt stays mounted). */
+  active?: boolean
   onSettingsChange: (partial: Partial<AppSettings>) => void
   onStatus: (msg: string, isError?: boolean, options?: { sticky?: boolean }) => void
   onPromptSourceChange: (imagePath: string, promptText: string) => void
   onImagesChange: (images: ImageItem[]) => void
 }
 
-function folderLabel(path: string): string {
-  const norm = path.replace(/\\/g, '/')
-  const i = norm.lastIndexOf('/')
-  return i >= 0 ? path.slice(i + 1) : path
-}
-
 export function PromptView({
   settings,
+  active = true,
   onSettingsChange,
   onStatus,
   onPromptSourceChange,
@@ -41,18 +40,17 @@ export function PromptView({
   const [selectedPath, setSelectedPath] = useState<string | null>(
     () => settings.promptImagePath.trim() || null
   )
+  const imageListRef = useRef<HTMLUListElement | null>(null)
   const [english, setEnglish] = useState(() => settings.promptText)
   const [translated, setTranslated] = useState('')
   const [motionNote, setMotionNote] = useState('')
   const [dirty, setDirty] = useState(false)
   const [loadingList, setLoadingList] = useState(false)
   const [generating, setGenerating] = useState(false)
-  const [folderMenuOpen, setFolderMenuOpen] = useState(false)
 
   const abortRef = useRef<AbortController | null>(null)
   const loadToken = useRef(0)
   const dragKind = useRef<'left' | 'right' | null>(null)
-  const folderMenuRef = useRef<HTMLDivElement | null>(null)
   const promptImagePathRef = useRef(settings.promptImagePath)
   promptImagePathRef.current = settings.promptImagePath
 
@@ -148,15 +146,17 @@ export function PromptView({
     [onPromptSourceChange, settings.promptImagePath, english]
   )
 
-  useEffect(() => {
-    const onDocClick = (e: MouseEvent) => {
-      if (!folderMenuRef.current?.contains(e.target as Node)) {
-        setFolderMenuOpen(false)
-      }
-    }
-    document.addEventListener('mousedown', onDocClick)
-    return () => document.removeEventListener('mousedown', onDocClick)
-  }, [])
+  const imagePaths = useMemo(() => images.map((img) => img.path), [images])
+  useArrowListNav({
+    enabled: active && images.length > 0,
+    items: imagePaths,
+    selectedId: selectedPath,
+    onSelect: selectImage,
+    columns: settings.listViewMode === 'thumbs' ? 'auto' : 1,
+    containerRef: imageListRef,
+    shouldIgnore: () =>
+      Boolean(document.querySelector('.settings-modal, .toolbar-dataset-menu'))
+  })
 
   const loadCaption = useCallback(
     async (imagePath: string) => {
@@ -200,25 +200,6 @@ export function PromptView({
     if (translateError) onStatus(translateError, true)
   }, [translateError, onStatus])
 
-  const addFolder = async () => {
-    const dir = await window.api.openFolder()
-    if (!dir) return
-    const folders = settings.imageFolders.includes(dir)
-      ? settings.imageFolders
-      : [...settings.imageFolders, dir]
-    onSettingsChange({
-      imageFolders: folders,
-      lastFolder: dir
-    })
-    setFolderMenuOpen(false)
-    onStatus(`Opened folder: ${folderLabel(dir)}`)
-  }
-
-  const selectFolder = (dir: string) => {
-    onSettingsChange({ lastFolder: dir })
-    setFolderMenuOpen(false)
-  }
-
   const saveCaption = async () => {
     if (!selectedPath) return
     try {
@@ -238,17 +219,21 @@ export function PromptView({
     }
   }
 
-  const runGenerate = async (force: boolean) => {
+  const runGenerate = async () => {
     if (!selectedPath) return
-    if (!force && english.trim()) {
-      onStatus('Prompt already exists — use Re-generate to overwrite', false)
-      return
-    }
+    // Drop any in-flight / debounced translation so prompt gen wins immediately.
+    cancelInFlight()
+    setTranslated('')
     abortRef.current?.abort()
     const ac = new AbortController()
     abortRef.current = ac
     setGenerating(true)
-    onStatus('Generating I2V prompt…', false, { sticky: true })
+    onStatus(
+      english.trim() ? 'Re-generating I2V prompt…' : 'Generating I2V prompt…',
+      false,
+      { sticky: true }
+    )
+    let generatedPrompt: string | null = null
     try {
       const prompt = await generateI2vPromptForImage(
         settings,
@@ -257,11 +242,11 @@ export function PromptView({
         motionNote
       )
       if (ac.signal.aborted) return
+      generatedPrompt = prompt
       setEnglish(prompt)
       setEnglishSnapshot(prompt)
       setDirty(true)
       setTranslated('')
-      if (prompt.trim()) translateEnglishToTargetNow(prompt, selectedPath)
       onStatus('Prompt generated')
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err)
@@ -273,6 +258,10 @@ export function PromptView({
     } finally {
       if (abortRef.current === ac) abortRef.current = null
       setGenerating(false)
+    }
+    // After Generate finishes (and translation is re-enabled), translate the new prompt.
+    if (generatedPrompt?.trim() && !ac.signal.aborted) {
+      translateEnglishToTargetNow(generatedPrompt, selectedPath)
     }
   }
 
@@ -343,48 +332,6 @@ export function PromptView({
     >
       <aside className="sidebar">
         <div className="list-toolbar">
-          <div className="list-toolbar-left" ref={folderMenuRef}>
-            <div className="toolbar-dataset">
-              <button
-                type="button"
-                className="toolbar-dataset-trigger"
-                onClick={() => setFolderMenuOpen((v) => !v)}
-                title={folder ?? 'No folder'}
-              >
-                <span className="toolbar-dataset-label">
-                  {folder ? folderLabel(folder) : 'Select folder'}
-                </span>
-                ▾
-              </button>
-              {folderMenuOpen ? (
-                <ul className="toolbar-dataset-menu">
-                  {settings.imageFolders.length === 0 ? (
-                    <li>
-                      <button type="button" className="toolbar-dataset-option" disabled>
-                        No folders yet
-                      </button>
-                    </li>
-                  ) : (
-                    settings.imageFolders.map((dir) => (
-                      <li key={dir}>
-                        <button
-                          type="button"
-                          className={`toolbar-dataset-option${dir === folder ? ' active' : ''}`}
-                          onClick={() => selectFolder(dir)}
-                          title={dir}
-                        >
-                          {folderLabel(dir)}
-                        </button>
-                      </li>
-                    ))
-                  )}
-                </ul>
-              ) : null}
-            </div>
-            <button type="button" onClick={() => void addFolder()}>
-              Add folder
-            </button>
-          </div>
           <div className="list-toolbar-right">
             <button
               type="button"
@@ -402,19 +349,18 @@ export function PromptView({
             >
               ▦
             </button>
-            {settings.listViewMode === 'thumbs' ? (
-              <input
-                type="range"
-                className="list-toolbar-slider"
-                min={64}
-                max={200}
-                value={settings.thumbnailWidth}
-                onChange={(e) =>
-                  onSettingsChange({ thumbnailWidth: Number(e.target.value) })
-                }
-                title="Thumbnail size"
-              />
-            ) : null}
+            <input
+              type="range"
+              className="list-toolbar-slider"
+              min={64}
+              max={200}
+              value={settings.thumbnailWidth}
+              onChange={(e) =>
+                onSettingsChange({ thumbnailWidth: Number(e.target.value) })
+              }
+              title="Thumbnail size"
+              aria-label="Thumbnail size"
+            />
           </div>
         </div>
 
@@ -423,10 +369,11 @@ export function PromptView({
             <div className="image-list empty">Loading images…</div>
           ) : images.length === 0 ? (
             <div className="image-list empty">
-              {folder ? 'No images in this folder' : 'Add a folder to begin'}
+              {folder ? 'No images in this folder' : 'Add a folder from the toolbar to begin'}
             </div>
           ) : (
             <ul
+              ref={imageListRef}
               className={`image-list${settings.listViewMode === 'thumbs' ? ' thumbnails' : ''}`}
               style={
                 settings.listViewMode === 'thumbs'
@@ -443,6 +390,7 @@ export function PromptView({
                     <li key={img.path} className="image-list-grid-item">
                       <button
                         type="button"
+                        data-nav-id={img.path}
                         className={`image-list-item thumb${selectedCls}${busyCls}`}
                         onClick={() => selectImage(img.path)}
                         title={img.name}
@@ -462,6 +410,7 @@ export function PromptView({
                   <li key={img.path}>
                     <button
                       type="button"
+                      data-nav-id={img.path}
                       className={`image-list-item${selectedCls}${busyCls}`}
                       onClick={() => selectImage(img.path)}
                       title={img.name}
@@ -539,23 +488,14 @@ export function PromptView({
                   Cancel
                 </button>
               ) : (
-                <>
-                  <button
-                    type="button"
-                    className="primary"
-                    disabled={!selectedPath}
-                    onClick={() => void runGenerate(false)}
-                  >
-                    Generate Prompt
-                  </button>
-                  <button
-                    type="button"
-                    disabled={!selectedPath}
-                    onClick={() => void runGenerate(true)}
-                  >
-                    Re-generate
-                  </button>
-                </>
+                <button
+                  type="button"
+                  className="primary"
+                  disabled={!selectedPath}
+                  onClick={() => void runGenerate()}
+                >
+                  Generate Prompt
+                </button>
               )}
             </div>
           </div>
@@ -577,7 +517,24 @@ export function PromptView({
           </div>
 
           <div className="caption-header">
-            <label htmlFor="prompt-translated">{langLabel}</label>
+            <label htmlFor="prompt-translated">Translation</label>
+            <div className="caption-header-actions">
+              <select
+                className="lang-select"
+                id="prompt-target-language"
+                aria-label="Target language"
+                title="Target language"
+                value={settings.targetLanguage}
+                disabled={!selectedPath || generating}
+                onChange={(e) => onSettingsChange({ targetLanguage: e.target.value })}
+              >
+                {LANGUAGES.map((lang) => (
+                  <option key={lang.code} value={lang.code}>
+                    {lang.label}
+                  </option>
+                ))}
+              </select>
+            </div>
           </div>
           <div className="caption-field">
             <textarea

@@ -121,6 +121,12 @@ export function useBidirectionalTranslate({
     [clearTimers, runTranslate]
   )
 
+  useEffect(() => {
+    if (!enabled) {
+      cancelInFlight()
+    }
+  }, [enabled, cancelInFlight])
+
   const langKey = `${settings.targetLanguage}|${settings.provider}|${settings.model}|${settings.lmStudioBaseUrl}|${settings.ollamaBaseUrl}`
   const prevLangKey = useRef<string | null>(null)
   const englishSnapshot = useRef('')
