@@ -8,7 +8,8 @@ export interface ImageItem {
 
 export type TranslationProvider = 'lmstudio' | 'ollama'
 export type UiGpuMode = 'auto' | 'software' | 'onboard'
-export type ActiveView = 'prompt' | 'i2v' | 'flf2v' | 'loop' | 'upscale'
+export type ActiveView = 'prompt' | 'videoGen' | 'upscale'
+export type VideoGenPanel = 'i2v' | 'flf2v' | 'loop'
 export type FlfMode = 'flf2v' | 'wanfun_inpaint'
 
 export interface PromptPreset {
@@ -107,6 +108,7 @@ export interface AppSettings {
   listViewMode: 'list' | 'thumbs'
   thumbnailWidth: number
   activeView: ActiveView
+  videoGenPanel: VideoGenPanel
   uiGpuMode: UiGpuMode
   disableUiGpu: boolean
   pythonPath: string

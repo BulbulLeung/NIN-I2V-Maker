@@ -5,7 +5,8 @@ import type {
   FlfMode,
   I2vGenerateDraft,
   ImageItem,
-  SharedComfyDraft
+  SharedComfyDraft,
+  VideoGenPanel
 } from '../types'
 import {
   DEFAULT_FLF2V_GENERATE_DRAFT,
@@ -22,12 +23,10 @@ import {
   probeComfyOnline
 } from '../services/comfyWan22Loop'
 import { parentDir } from '../services/comfyI2v'
-import { useArrowListNav, isTextEntryTarget } from '../hooks/useArrowListNav'
+import { useArrowListNav } from '../hooks/useArrowListNav'
 import { useBackdropDismiss } from '../hooks/useBackdropDismiss'
 import { unloadLocalAiModels } from '../services/unloadLocalAi'
-import { ResourceMonitorPane } from './ResourceMonitorPane'
 import { ExtraLoraDialog } from './ExtraLoraDialog'
-import { ConfirmDialog } from './ConfirmDialog'
 import { SearchableSelect } from './SearchableSelect'
 import {
   ASPECT_PRESET_OPTIONS,
@@ -47,12 +46,9 @@ import {
   type SetupSettingsTab
 } from '../utils/setupCompleteness'
 import { SetupIncompleteDialog } from './SetupIncompleteDialog'
-import {
-  useSharedGenerateGallery,
-  type GalleryVideoMeta
-} from './SharedGenerateGalleryContext'
+import { useSharedGenerateGallery } from './SharedGenerateGalleryContext'
 
-type Panel = 'i2v' | 'flf2v' | 'loop'
+type Panel = VideoGenPanel
 
 interface Props {
   panel: Panel
@@ -70,33 +66,14 @@ interface Props {
   onSelectStartImage: (imagePath: string) => void
   onSharedComfyChange: (shared: SharedComfyDraft) => void
   onDraftChange: (draft: I2vGenerateDraft | Flf2vGenerateDraft) => void
+  /** Switch I2V / FLF2V / LOOP sub-mode inside Video Gen. */
+  onPanelChange: (panel: VideoGenPanel) => void
   onStatus: (msg: string, isError?: boolean, options?: { sticky?: boolean }) => void
   /** Open Settings, optionally on a specific incomplete-setup tab. */
   onOpenSettings?: (tab?: SetupSettingsTab | null) => void
   /** True while any generate panel is running a video job (blocks Local AI). */
   videoGenerating?: boolean
   onVideoGeneratingChange?: (generating: boolean) => void
-}
-
-function formatFileSize(bytes: number): string {
-  if (bytes < 1024) return `${bytes} B`
-  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`
-  if (bytes < 1024 * 1024 * 1024) return `${(bytes / (1024 * 1024)).toFixed(1)} MB`
-  return `${(bytes / (1024 * 1024 * 1024)).toFixed(2)} GB`
-}
-
-function formatVideoMetaLine(meta: GalleryVideoMeta): string {
-  const parts: string[] = []
-  if (meta.seed != null) parts.push(`seed ${meta.seed}`)
-  if (meta.width && meta.height) parts.push(`${meta.width}×${meta.height}`)
-  if (meta.sizeBytes > 0) parts.push(formatFileSize(meta.sizeBytes))
-  if (meta.codec) {
-    parts.push(meta.codec)
-    if (meta.bitDepth) parts.push(`${meta.bitDepth}bit`)
-  } else if (meta.container) {
-    parts.push(meta.container)
-  }
-  return parts.join(' · ')
 }
 
 const SAMPLERS = [
@@ -149,6 +126,7 @@ export function GenerateView({
   onSelectStartImage,
   onSharedComfyChange,
   onDraftChange,
+  onPanelChange,
   onStatus,
   onOpenSettings,
   videoGenerating = false,
@@ -161,16 +139,7 @@ export function GenerateView({
   const [batchProgress, setBatchProgress] = useState<{ current: number; total: number } | null>(
     null
   )
-  const {
-    videos,
-    selectedVideo,
-    videoMeta,
-    setSelectedVideo,
-    setVideos,
-    setVideoMeta,
-    refreshGallery
-  } = useSharedGenerateGallery()
-  const [monitorDevice, setMonitorDevice] = useState('cuda:0')
+  const { refreshGallery, setSelectedVideo } = useSharedGenerateGallery()
 
   const [resolvedSize, setResolvedSize] = useState<{ width: number; height: number }>({
     width: draft.width,
@@ -181,13 +150,11 @@ export function GenerateView({
   const [wan22LoraModels, setWan22LoraModels] = useState<{ name: string; path: string }[]>([])
   const [loraPopupOpen, setLoraPopupOpen] = useState(false)
   const [imagePicker, setImagePicker] = useState<null | 'start' | 'end'>(null)
-  const [confirmDeleteVideo, setConfirmDeleteVideo] = useState(false)
   const [setupIncompleteItems, setSetupIncompleteItems] = useState<SetupIncompleteItem[] | null>(
     null
   )
 
   const abortRef = useRef<AbortController | null>(null)
-  const galleryRef = useRef<HTMLDivElement | null>(null)
   const imagePickerListRef = useRef<HTMLDivElement | null>(null)
   const draftRef = useRef(draft)
   draftRef.current = draft
@@ -197,10 +164,6 @@ export function GenerateView({
   startImageRef.current = startImagePath
   const promptTextRef = useRef(promptText)
   promptTextRef.current = promptText
-  const selectedVideoRef = useRef(selectedVideo)
-  selectedVideoRef.current = selectedVideo
-  const videosRef = useRef(videos)
-  videosRef.current = videos
 
   const patchDraft = useCallback(
     (partial: Partial<I2vGenerateDraft & Flf2vGenerateDraft>) => {
@@ -209,12 +172,7 @@ export function GenerateView({
     [onDraftChange]
   )
 
-  const videoPaths = useMemo(() => videos.map((v) => v.path), [videos])
   const promptImagePaths = useMemo(() => promptImages.map((img) => img.path), [promptImages])
-
-  const selectGalleryVideo = useCallback((path: string) => {
-    setSelectedVideo(path)
-  }, [])
 
   const dismissImagePicker = useCallback(() => setImagePicker(null), [])
   const imagePickerBackdrop = useBackdropDismiss(dismissImagePicker)
@@ -239,29 +197,13 @@ export function GenerateView({
     return false
   }, [])
 
-  useArrowListNav({
-    enabled:
-      active &&
-      !imagePicker &&
-      !loraPopupOpen &&
-      !confirmDeleteVideo &&
-      !setupIncompleteItems &&
-      videoPaths.length > 0,
-    items: videoPaths,
-    selectedId: selectedVideo,
-    onSelect: selectGalleryVideo,
-    columns: 1,
-    containerRef: galleryRef,
-    shouldIgnore: ignoreWhenOtherModal
-  })
-
   const pickerSelectedId =
     imagePicker === 'end'
       ? (draft as Flf2vGenerateDraft).endImagePath || null
       : startImagePath || draft.selectedImagePath || null
 
   useArrowListNav({
-    enabled: active && Boolean(imagePicker) && promptImagePaths.length > 0 && !confirmDeleteVideo,
+    enabled: active && Boolean(imagePicker) && promptImagePaths.length > 0,
     items: promptImagePaths,
     selectedId: pickerSelectedId,
     onSelect: selectPickerImage,
@@ -269,49 +211,6 @@ export function GenerateView({
     containerRef: imagePickerListRef,
     shouldIgnore: ignoreWhenOtherModal
   })
-
-  useEffect(() => {
-    if (!active) return
-    const onKey = (e: KeyboardEvent) => {
-      if (e.key !== 'Delete') return
-      if (e.defaultPrevented) return
-      if (e.altKey || e.ctrlKey || e.metaKey) return
-      if (isTextEntryTarget(e.target)) return
-      if (imagePicker || loraPopupOpen) return
-      if (
-        document.querySelector(
-          '.settings-modal, .confirm-modal, .lora-popup-modal, .setup-incomplete-modal'
-        )
-      ) {
-        return
-      }
-      if (!selectedVideoRef.current) return
-      e.preventDefault()
-      e.stopPropagation()
-      setConfirmDeleteVideo(true)
-    }
-    window.addEventListener('keydown', onKey, true)
-    return () => window.removeEventListener('keydown', onKey, true)
-  }, [active, imagePicker, loraPopupOpen])
-
-  const performDeleteVideo = useCallback(async () => {
-    const path = selectedVideoRef.current
-    setConfirmDeleteVideo(false)
-    if (!path) return
-    const res = await window.api.trashItem(path)
-    if (!res.ok) {
-      onStatus(res.error || 'Failed to move video to Recycle Bin', true)
-      return
-    }
-    const list = videosRef.current
-    const idx = list.findIndex((v) => v.path === path)
-    const nextList = list.filter((v) => v.path !== path)
-    setVideos(nextList)
-    const nextPath = nextList[idx]?.path ?? nextList[idx - 1]?.path ?? null
-    setSelectedVideo(nextPath)
-    if (!nextPath) setVideoMeta(null)
-    onStatus(`Moved to Recycle Bin: ${basenamePath(path)}`)
-  }, [onStatus])
 
   // Keep draft start image + prompt aligned with Prompt tab.
   useEffect(() => {
@@ -423,21 +322,6 @@ export function GenerateView({
       cancelled = true
     }
   }, [sharedComfy.wan22LoraFolder])
-
-  useEffect(() => {
-    let cancelled = false
-    void (async () => {
-      try {
-        const devices = await window.api.listGpuDevices()
-        if (!cancelled && devices[0]?.id) setMonitorDevice(devices[0].id)
-      } catch {
-        /* keep default */
-      }
-    })()
-    return () => {
-      cancelled = true
-    }
-  }, [])
 
   useEffect(() => {
     if (!active && !generating) return
@@ -1023,9 +907,41 @@ export function GenerateView({
   const extraLoraCount = activeHigh + activeLow
 
   return (
-    <div className="generate-view">
-      <div className="generate-body">
-        <aside className="generate-settings">
+    <>
+      <aside className="generate-settings">
+          <div
+            className="view-switch generate-panel-switch"
+            role="tablist"
+            aria-label="Video Gen mode"
+          >
+            <button
+              type="button"
+              role="tab"
+              className={`view-switch-seg${panel === 'i2v' ? ' active' : ''}`}
+              aria-selected={panel === 'i2v'}
+              onClick={() => onPanelChange('i2v')}
+            >
+              I2V
+            </button>
+            <button
+              type="button"
+              role="tab"
+              className={`view-switch-seg${panel === 'flf2v' ? ' active' : ''}`}
+              aria-selected={panel === 'flf2v'}
+              onClick={() => onPanelChange('flf2v')}
+            >
+              FLF2V
+            </button>
+            <button
+              type="button"
+              role="tab"
+              className={`view-switch-seg${panel === 'loop' ? ' active' : ''}`}
+              aria-selected={panel === 'loop'}
+              onClick={() => onPanelChange('loop')}
+            >
+              LOOP
+            </button>
+          </div>
           <div className="generate-settings-scroll">
             <div className="generate-settings-col generate-settings-col-left">
               <div className="lora-test-comfy-row">
@@ -1380,133 +1296,7 @@ export function GenerateView({
               </button>
             )}
           </div>
-        </aside>
-
-        {active ? (
-          <section className="generate-gallery">
-            <div className="generate-gallery-header">
-              <span>
-                {videos.length} video{videos.length === 1 ? '' : 's'}
-                {sharedComfy.outputFolder ? ` · ${sharedComfy.outputFolder}` : ''}
-              </span>
-              <div className="generate-gallery-header-actions">
-                <button type="button" onClick={() => void refreshGallery()}>
-                  Refresh
-                </button>
-                <button
-                  type="button"
-                  disabled={!sharedComfy.outputFolder.trim()}
-                  onClick={() => {
-                    void window.api.openPathInExplorer(sharedComfy.outputFolder.trim())
-                  }}
-                >
-                  Open folder
-                </button>
-              </div>
-            </div>
-
-            <div className="generate-video-player">
-              {selectedVideo ? (
-                <>
-                  <video
-                    key={selectedVideo}
-                    src={window.api.toLocalUrl(selectedVideo)}
-                    controls
-                    autoPlay
-                    loop
-                    onLoadedMetadata={(e) => {
-                      const el = e.currentTarget
-                      const w = el.videoWidth
-                      const h = el.videoHeight
-                      if (!w || !h) return
-                      setVideoMeta((prev) => {
-                        if (!prev) return prev
-                        if (prev.width && prev.height) return prev
-                        return { ...prev, width: w, height: h }
-                      })
-                    }}
-                  />
-                  {videoMeta ? (
-                    <div className="generate-video-meta">
-                      <button
-                        type="button"
-                        className="generate-use-seed-btn"
-                        disabled={videoMeta.seed == null}
-                        title={
-                          videoMeta.seed != null
-                            ? `Copy seed ${videoMeta.seed} into Seed field`
-                            : 'No seed in filename'
-                        }
-                        onClick={() => {
-                          if (videoMeta.seed == null) return
-                          patchDraft({ seed: videoMeta.seed })
-                          onStatus(`Seed set to ${videoMeta.seed}`)
-                        }}
-                      >
-                        Use Seed
-                      </button>
-                      <div className="generate-video-meta-text">
-                        <div className="generate-video-meta-name" title={videoMeta.name}>
-                          {videoMeta.name}
-                        </div>
-                        <div className="generate-video-meta-details">
-                          {formatVideoMetaLine(videoMeta)}
-                        </div>
-                      </div>
-                    </div>
-                  ) : null}
-                </>
-              ) : (
-                <div className="generate-video-player-empty">
-                  {videos.length > 0
-                    ? 'Select a video below to preview'
-                    : sharedComfy.outputFolder
-                      ? 'No videos in output folder yet'
-                      : 'Choose an output folder in Settings'}
-                </div>
-              )}
-            </div>
-
-            <div className="i2v-gallery" ref={galleryRef}>
-              {videos.length === 0 ? (
-                <div className="i2v-gallery-empty">No videos</div>
-              ) : (
-                videos.map((v) => (
-                  <button
-                    key={v.path}
-                    type="button"
-                    data-nav-id={v.path}
-                    className={`i2v-gallery-item${v.path === selectedVideo ? ' active' : ''}`}
-                    onClick={() => setSelectedVideo(v.path)}
-                    title={v.name}
-                  >
-                    <video
-                      src={window.api.toLocalUrl(v.path)}
-                      muted
-                      loop
-                      playsInline
-                      preload="metadata"
-                      onMouseEnter={(e) => {
-                        void e.currentTarget.play().catch(() => undefined)
-                      }}
-                      onMouseLeave={(e) => {
-                        e.currentTarget.pause()
-                        e.currentTarget.currentTime = 0
-                      }}
-                    />
-                  </button>
-                ))
-              )}
-            </div>
-          </section>
-        ) : (
-          <section className="generate-gallery" aria-hidden />
-        )}
-
-        <aside className="generate-monitor">
-          <ResourceMonitorPane device={monitorDevice} active={active} />
-        </aside>
-      </div>
+      </aside>
 
       <ExtraLoraDialog
         open={loraPopupOpen}
@@ -1517,18 +1307,6 @@ export function GenerateView({
         onChangeHigh={(extraLorasHigh) => patchDraft({ extraLorasHigh })}
         onChangeLow={(extraLorasLow) => patchDraft({ extraLorasLow })}
         onClose={() => setLoraPopupOpen(false)}
-      />
-
-      <ConfirmDialog
-        open={confirmDeleteVideo}
-        title="Delete video"
-        message={
-          selectedVideo
-            ? `Move this video to the Recycle Bin?\n${basenamePath(selectedVideo)}`
-            : 'Move this video to the Recycle Bin?'
-        }
-        onCancel={() => setConfirmDeleteVideo(false)}
-        onConfirm={() => void performDeleteVideo()}
       />
 
       <SetupIncompleteDialog
@@ -1606,6 +1384,6 @@ export function GenerateView({
           </div>
         </div>
       ) : null}
-    </div>
+    </>
   )
 }

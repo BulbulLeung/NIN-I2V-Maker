@@ -9,14 +9,15 @@ import {
   type ImageItem,
   type LoopGenerateDraft,
   type SharedComfyDraft,
-  type UpscaleGenerateDraft
+  type UpscaleGenerateDraft,
+  type VideoGenPanel
 } from './types'
 import { createDefaultPromptPreset } from './defaults/i2vPromptPresets'
 import { parseSidecarCaption } from './utils/sidecarCaption'
 import { SettingsDialog, type SettingsTab } from './components/SettingsDialog'
 import { PromptView } from './components/PromptView'
-import { GenerateView } from './components/GenerateView'
 import { SharedGenerateGalleryProvider } from './components/SharedGenerateGalleryContext'
+import { VideoGenView } from './components/VideoGenView'
 import { UpscaleView } from './components/UpscaleView'
 import { setLocalAiBlocked } from './services/localAiGate'
 import {
@@ -149,10 +150,14 @@ export function App() {
 
   const setView = (activeView: ActiveView) => {
     persistSettings({ activeView })
-    if (
-      (activeView === 'i2v' || activeView === 'flf2v' || activeView === 'loop') &&
-      promptImages.length === 0
-    ) {
+    if (activeView === 'videoGen' && promptImages.length === 0) {
+      onStatus('Add a folder from the toolbar to load images', true)
+    }
+  }
+
+  const setVideoGenPanel = (videoGenPanel: VideoGenPanel) => {
+    persistSettings({ activeView: 'videoGen', videoGenPanel })
+    if (promptImages.length === 0) {
       onStatus('Add a folder from the toolbar to load images', true)
     }
   }
@@ -350,29 +355,11 @@ export function App() {
             <button
               type="button"
               role="tab"
-              className={`view-switch-seg${settings.activeView === 'i2v' ? ' active' : ''}`}
-              aria-selected={settings.activeView === 'i2v'}
-              onClick={() => setView('i2v')}
+              className={`view-switch-seg${settings.activeView === 'videoGen' ? ' active' : ''}`}
+              aria-selected={settings.activeView === 'videoGen'}
+              onClick={() => setView('videoGen')}
             >
-              I2V
-            </button>
-            <button
-              type="button"
-              role="tab"
-              className={`view-switch-seg${settings.activeView === 'flf2v' ? ' active' : ''}`}
-              aria-selected={settings.activeView === 'flf2v'}
-              onClick={() => setView('flf2v')}
-            >
-              FLF2V
-            </button>
-            <button
-              type="button"
-              role="tab"
-              className={`view-switch-seg${settings.activeView === 'loop' ? ' active' : ''}`}
-              aria-selected={settings.activeView === 'loop'}
-              onClick={() => setView('loop')}
-            >
-              LOOP
+              Video Gen
             </button>
             <button
               type="button"
@@ -423,69 +410,23 @@ export function App() {
       >
         <div
           className="app-view-slot"
-          style={{ display: settings.activeView === 'i2v' ? undefined : 'none' }}
-          aria-hidden={settings.activeView !== 'i2v'}
+          style={{ display: settings.activeView === 'videoGen' ? undefined : 'none' }}
+          aria-hidden={settings.activeView !== 'videoGen'}
         >
-          <GenerateView
-            panel="i2v"
-            active={settings.activeView === 'i2v'}
+          <VideoGenView
+            active={settings.activeView === 'videoGen'}
+            videoGenPanel={settings.videoGenPanel}
             settings={settings}
             sharedComfy={settings.sharedComfy}
-            draft={settings.i2vDraft}
             startImagePath={settings.promptImagePath}
             promptText={settings.promptText}
             promptImages={promptImages}
             onSelectStartImage={onSelectStartImage}
             onSharedComfyChange={onSharedComfyChange}
-            onDraftChange={(d) => onI2vDraftChange(d as I2vGenerateDraft)}
-            onStatus={onStatus}
-            onOpenSettings={openSettings}
-            videoGenerating={videoGenerating}
-            onVideoGeneratingChange={onVideoGeneratingChange}
-          />
-        </div>
-
-        <div
-          className="app-view-slot"
-          style={{ display: settings.activeView === 'flf2v' ? undefined : 'none' }}
-          aria-hidden={settings.activeView !== 'flf2v'}
-        >
-          <GenerateView
-            panel="flf2v"
-            active={settings.activeView === 'flf2v'}
-            settings={settings}
-            sharedComfy={settings.sharedComfy}
-            draft={settings.flf2vDraft}
-            startImagePath={settings.promptImagePath}
-            promptText={settings.promptText}
-            promptImages={promptImages}
-            onSelectStartImage={onSelectStartImage}
-            onSharedComfyChange={onSharedComfyChange}
-            onDraftChange={(d) => onFlf2vDraftChange(d as Flf2vGenerateDraft)}
-            onStatus={onStatus}
-            onOpenSettings={openSettings}
-            videoGenerating={videoGenerating}
-            onVideoGeneratingChange={onVideoGeneratingChange}
-          />
-        </div>
-
-        <div
-          className="app-view-slot"
-          style={{ display: settings.activeView === 'loop' ? undefined : 'none' }}
-          aria-hidden={settings.activeView !== 'loop'}
-        >
-          <GenerateView
-            panel="loop"
-            active={settings.activeView === 'loop'}
-            settings={settings}
-            sharedComfy={settings.sharedComfy}
-            draft={settings.loopDraft}
-            startImagePath={settings.promptImagePath}
-            promptText={settings.promptText}
-            promptImages={promptImages}
-            onSelectStartImage={onSelectStartImage}
-            onSharedComfyChange={onSharedComfyChange}
-            onDraftChange={(d) => onLoopDraftChange(d as LoopGenerateDraft)}
+            onI2vDraftChange={onI2vDraftChange}
+            onFlf2vDraftChange={onFlf2vDraftChange}
+            onLoopDraftChange={onLoopDraftChange}
+            onPanelChange={setVideoGenPanel}
             onStatus={onStatus}
             onOpenSettings={openSettings}
             videoGenerating={videoGenerating}

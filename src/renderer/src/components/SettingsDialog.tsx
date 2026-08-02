@@ -721,8 +721,7 @@ export function SettingsDialog({ settings, open, initialTab, onClose, onSave }: 
                 <span>
                   Output folder
                   <FieldHintIcon title="Output folder">
-                    Finished Wan2.2 videos are copied here and shown in the I2V / FLF2V / LOOP
-                    gallery.
+                    Finished Wan2.2 videos are copied here and shown in the Video Gen gallery.
                   </FieldHintIcon>
                 </span>
                 <div className="field-row">

@@ -714,7 +714,7 @@ export function PromptView({
               Save
             </button>
             <p className="field-hint prompt-sync-hint">
-              I2V / FLF2V / LOOP use the selected image and English prompt automatically.
+              Video Gen uses the selected image and English prompt automatically.
             </p>
           </div>
         </div>

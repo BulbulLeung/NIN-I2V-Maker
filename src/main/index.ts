@@ -65,7 +65,8 @@ try {
 
 type TranslationProvider = 'lmstudio' | 'ollama'
 type UiGpuMode = 'auto' | 'software' | 'onboard'
-type ActiveView = 'prompt' | 'i2v' | 'flf2v' | 'loop' | 'upscale'
+type ActiveView = 'prompt' | 'videoGen' | 'upscale'
+type VideoGenPanel = 'i2v' | 'flf2v' | 'loop'
 type FlfMode = 'flf2v' | 'wanfun_inpaint'
 
 interface PromptPreset {
@@ -164,6 +165,7 @@ interface AppSettings {
   listViewMode: 'list' | 'thumbs'
   thumbnailWidth: number
   activeView: ActiveView
+  videoGenPanel: VideoGenPanel
   uiGpuMode: UiGpuMode
   disableUiGpu: boolean
   pythonPath: string
@@ -294,6 +296,7 @@ const DEFAULT_SETTINGS: AppSettings = {
   listViewMode: 'list',
   thumbnailWidth: 120,
   activeView: 'prompt',
+  videoGenPanel: 'i2v',
   uiGpuMode: 'auto',
   disableUiGpu: false,
   pythonPath: '',
@@ -324,12 +327,23 @@ function normalizeUiGpuMode(raw: Record<string, unknown> | null | undefined): Ui
   return 'auto'
 }
 
-function normalizeActiveView(raw: unknown): ActiveView {
-  if (raw === 'i2v' || raw === 'generate') return 'i2v'
-  if (raw === 'flf2v') return 'flf2v'
-  if (raw === 'loop') return 'loop'
-  if (raw === 'upscale') return 'upscale'
-  return 'prompt'
+function normalizeVideoGenPanel(raw: unknown): VideoGenPanel {
+  if (raw === 'flf2v' || raw === 'loop') return raw
+  return 'i2v'
+}
+
+function normalizeActiveViewAndPanel(raw: unknown): {
+  activeView: ActiveView
+  videoGenPanel: VideoGenPanel | null
+} {
+  if (raw === 'i2v' || raw === 'generate') {
+    return { activeView: 'videoGen', videoGenPanel: 'i2v' }
+  }
+  if (raw === 'flf2v') return { activeView: 'videoGen', videoGenPanel: 'flf2v' }
+  if (raw === 'loop') return { activeView: 'videoGen', videoGenPanel: 'loop' }
+  if (raw === 'videoGen') return { activeView: 'videoGen', videoGenPanel: null }
+  if (raw === 'upscale') return { activeView: 'upscale', videoGenPanel: null }
+  return { activeView: 'prompt', videoGenPanel: null }
 }
 
 function normalizeListViewMode(raw: unknown): 'list' | 'thumbs' {
@@ -649,6 +663,7 @@ async function loadSettings(): Promise<AppSettings> {
     const parsed = JSON.parse(raw) as Record<string, unknown>
     const uiGpuMode = normalizeUiGpuMode(parsed)
     const migrated = migrateGenerateSettings(parsed)
+    const viewAndPanel = normalizeActiveViewAndPanel(parsed.activeView)
     return {
       ...DEFAULT_SETTINGS,
       ...(parsed as Partial<AppSettings>),
@@ -667,7 +682,9 @@ async function loadSettings(): Promise<AppSettings> {
         typeof parsed.thumbnailWidth === 'number' && Number.isFinite(parsed.thumbnailWidth)
           ? parsed.thumbnailWidth
           : DEFAULT_SETTINGS.thumbnailWidth,
-      activeView: normalizeActiveView(parsed.activeView),
+      activeView: viewAndPanel.activeView,
+      videoGenPanel:
+        viewAndPanel.videoGenPanel ?? normalizeVideoGenPanel(parsed.videoGenPanel),
       uiGpuMode,
       disableUiGpu: uiGpuMode === 'software',
       pythonPath: typeof parsed.pythonPath === 'string' ? parsed.pythonPath : '',
@@ -1175,10 +1192,13 @@ app.whenReady().then(async () => {
     const merged = { ...current, ...settings }
     const uiGpuMode = normalizeUiGpuMode(merged as unknown as Record<string, unknown>)
     const migrated = migrateGenerateSettings(merged as unknown as Record<string, unknown>)
+    const viewAndPanel = normalizeActiveViewAndPanel(merged.activeView)
     await saveSettings({
       ...merged,
       listViewMode: normalizeListViewMode(merged.listViewMode),
-      activeView: normalizeActiveView(merged.activeView),
+      activeView: viewAndPanel.activeView,
+      videoGenPanel:
+        viewAndPanel.videoGenPanel ?? normalizeVideoGenPanel(merged.videoGenPanel),
       sharedComfy: {
         ...migrated.sharedComfy,
         ...(settings.sharedComfy || {})

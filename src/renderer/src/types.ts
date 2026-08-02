@@ -10,10 +10,12 @@ import {
   DEFAULT_UPSCALE_GENERATE_DRAFT,
   migrateGenerateSettings,
   normalizeActiveView,
+  normalizeActiveViewAndPanel,
   normalizeFlf2vGenerateDraft,
   normalizeI2vGenerateDraft,
   normalizeSharedComfyDraft,
   normalizeUpscaleGenerateDraft,
+  normalizeVideoGenPanel,
   pythonInstallPathFromDownloadFolder,
   type ActiveView,
   type Flf2vGenerateDraft,
@@ -23,6 +25,7 @@ import {
   type SharedComfyDraft,
   type UpscaleGenerateDraft,
   type ExtraLoraEntry,
+  type VideoGenPanel,
   type Wan22VideoMode,
   type VideoSaveBitDepth,
   type VideoSaveCodec,
@@ -39,6 +42,7 @@ export type {
   LoopGenerateDraft,
   SharedComfyDraft,
   UpscaleGenerateDraft,
+  VideoGenPanel,
   VideoSaveBitDepth,
   VideoSaveCodec,
   VideoSaveFormat,
@@ -59,10 +63,12 @@ export {
   framesFromSeconds,
   migrateGenerateSettings,
   normalizeActiveView,
+  normalizeActiveViewAndPanel,
   normalizeFlf2vGenerateDraft,
   normalizeI2vGenerateDraft,
   normalizeSharedComfyDraft,
   normalizeUpscaleGenerateDraft,
+  normalizeVideoGenPanel,
   pythonInstallPathFromDownloadFolder
 } from './defaults/i2vGenerate'
 
@@ -142,6 +148,8 @@ export interface AppSettings {
   listViewMode: ListViewMode
   thumbnailWidth: number
   activeView: ActiveView
+  /** Sub-mode inside Video Gen tab (I2V / FLF2V / LOOP). */
+  videoGenPanel: VideoGenPanel
   uiGpuMode: UiGpuMode
   disableUiGpu: boolean
   pythonPath: string
@@ -176,6 +184,7 @@ export const DEFAULT_SETTINGS: AppSettings = {
   listViewMode: 'list',
   thumbnailWidth: 120,
   activeView: 'prompt',
+  videoGenPanel: 'i2v',
   uiGpuMode: 'auto',
   disableUiGpu: false,
   pythonPath: '',
@@ -216,6 +225,10 @@ export function normalizeSettings(
       : presets[0].id
 
   const migrated = migrateGenerateSettings(r)
+  const viewAndPanel = normalizeActiveViewAndPanel(r.activeView)
+  const videoGenPanel =
+    viewAndPanel.videoGenPanel ??
+    normalizeVideoGenPanel(r.videoGenPanel)
 
   return {
     ...DEFAULT_SETTINGS,
@@ -251,7 +264,8 @@ export function normalizeSettings(
       typeof r.thumbnailWidth === 'number' && r.thumbnailWidth >= 64
         ? r.thumbnailWidth
         : 120,
-    activeView: normalizeActiveView(r.activeView),
+    activeView: viewAndPanel.activeView,
+    videoGenPanel,
     uiGpuMode,
     disableUiGpu: uiGpuMode === 'software',
     pythonPath: typeof r.pythonPath === 'string' ? r.pythonPath : '',

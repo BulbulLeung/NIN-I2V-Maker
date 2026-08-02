@@ -4,7 +4,8 @@ import {
   isResolutionPreset
 } from '../utils/wanResolution'
 
-export type ActiveView = 'prompt' | 'i2v' | 'flf2v' | 'loop' | 'upscale'
+export type ActiveView = 'prompt' | 'videoGen' | 'upscale'
+export type VideoGenPanel = 'i2v' | 'flf2v' | 'loop'
 export type FlfMode = 'flf2v' | 'wanfun_inpaint'
 export type Wan22VideoMode = 'i2v' | 'flf2v' | 'wanfun_inpaint'
 
@@ -531,12 +532,28 @@ export function migrateGenerateSettings(raw: Record<string, unknown>): {
   }
 }
 
+export function normalizeVideoGenPanel(value: unknown): VideoGenPanel {
+  if (value === 'flf2v' || value === 'loop') return value
+  return 'i2v'
+}
+
+/** Map legacy activeView values (i2v/flf2v/loop/generate) onto videoGen + panel. */
+export function normalizeActiveViewAndPanel(value: unknown): {
+  activeView: ActiveView
+  videoGenPanel: VideoGenPanel | null
+} {
+  if (value === 'i2v' || value === 'generate') {
+    return { activeView: 'videoGen', videoGenPanel: 'i2v' }
+  }
+  if (value === 'flf2v') return { activeView: 'videoGen', videoGenPanel: 'flf2v' }
+  if (value === 'loop') return { activeView: 'videoGen', videoGenPanel: 'loop' }
+  if (value === 'videoGen') return { activeView: 'videoGen', videoGenPanel: null }
+  if (value === 'upscale') return { activeView: 'upscale', videoGenPanel: null }
+  return { activeView: 'prompt', videoGenPanel: null }
+}
+
 export function normalizeActiveView(value: unknown): ActiveView {
-  if (value === 'i2v' || value === 'generate') return 'i2v'
-  if (value === 'flf2v') return 'flf2v'
-  if (value === 'loop') return 'loop'
-  if (value === 'upscale') return 'upscale'
-  return 'prompt'
+  return normalizeActiveViewAndPanel(value).activeView
 }
 
 export function pythonInstallPathFromDownloadFolder(
