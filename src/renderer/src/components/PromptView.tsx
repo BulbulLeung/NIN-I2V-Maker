@@ -555,6 +555,35 @@ export function PromptView({
 
       <aside className="right-pane prompt-right-pane">
         <div className="caption-panel">
+          <div className="caption-header prompt-preset-header">
+            <label htmlFor="prompt-preset-select">Prompt preset</label>
+            <div className="caption-header-actions">
+              <select
+                id="prompt-preset-select"
+                className="prompt-preset-select"
+                aria-label="Prompt preset"
+                title="System / vision prompt preset used when generating"
+                value={
+                  settings.promptPresets.some((p) => p.id === settings.activePromptPresetId)
+                    ? settings.activePromptPresetId
+                    : (settings.promptPresets[0]?.id ?? '')
+                }
+                disabled={
+                  generating || videoGenerating || settings.promptPresets.length === 0
+                }
+                onChange={(e) =>
+                  onSettingsChange({ activePromptPresetId: e.target.value })
+                }
+              >
+                {settings.promptPresets.map((p) => (
+                  <option key={p.id} value={p.id}>
+                    {p.name || 'Untitled preset'}
+                  </option>
+                ))}
+              </select>
+            </div>
+          </div>
+
           <div className="caption-header">
             <label htmlFor="prompt-motion-note">Motion description (priority)</label>
           </div>

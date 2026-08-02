@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useState } from 'react'
+import { useBackdropDismiss } from '../hooks/useBackdropDismiss'
 import type {
   AppSettings,
   PromptPreset,
@@ -25,6 +26,10 @@ import { DownloadFolderField } from './DownloadFolderField'
 import { PythonExecutableField } from './PythonExecutableField'
 import { ComfyUiBatField } from './ComfyUiBatField'
 import { FieldHintIcon } from './FieldHintIcon'
+import {
+  ModelPackDownloadButton,
+  type ModelPackId
+} from './ModelPackDownloadButton'
 
 export type SettingsTab = 'ai' | 'presets' | 'ui' | 'comfy' | 'wan22'
 
@@ -61,6 +66,12 @@ export function SettingsDialog({ settings, open, initialTab, onClose, onSave }: 
   const [testMsg, setTestMsg] = useState<string | null>(null)
   const [testErr, setTestErr] = useState<string | null>(null)
   const [busy, setBusy] = useState(false)
+  const [busyPackId, setBusyPackId] = useState<ModelPackId | null>(null)
+  const [packProgress, setPackProgress] = useState<{
+    packId: ModelPackId
+    message: string
+    pct: number
+  } | null>(null)
 
   useEffect(() => {
     if (!open) return
@@ -68,6 +79,8 @@ export function SettingsDialog({ settings, open, initialTab, onClose, onSave }: 
     setModelList([])
     setTestMsg(null)
     setTestErr(null)
+    setBusyPackId(null)
+    setPackProgress(null)
   }, [open, initialTab])
 
   const activePreset = useMemo(() => {
@@ -77,6 +90,8 @@ export function SettingsDialog({ settings, open, initialTab, onClose, onSave }: 
       null
     )
   }, [settings.promptPresets, settings.activePromptPresetId])
+
+  const backdrop = useBackdropDismiss(onClose)
 
   if (!open) return null
 
@@ -168,11 +183,32 @@ export function SettingsDialog({ settings, open, initialTab, onClose, onSave }: 
 
   const gd = settings.sharedComfy
 
+  const packDownloadProps = (packId: ModelPackId) => ({
+    packId,
+    downloadFolder: settings.downloadFolder,
+    busyPackId,
+    onBusyChange: setBusyPackId,
+    onProgress: (id: ModelPackId, message: string, pct: number) => {
+      setPackProgress({ packId: id, message, pct })
+    },
+    onError: (message: string) => {
+      setTestErr(message)
+      setPackProgress(null)
+    }
+  })
+
+  const packProgressHint = (packId: ModelPackId) =>
+    busyPackId === packId && packProgress?.packId === packId ? (
+      <p className="field-hint">
+        {packProgress.pct > 0 ? `${packProgress.pct}% — ` : ''}
+        {packProgress.message}
+      </p>
+    ) : null
+
   return (
-    <div className="modal-backdrop" onClick={onClose} role="presentation">
+    <div className="modal-backdrop" role="presentation" {...backdrop}>
       <div
         className="modal settings-modal modal-wide"
-        onClick={(e) => e.stopPropagation()}
         role="dialog"
         aria-modal="true"
         aria-labelledby="settings-title"
@@ -375,7 +411,9 @@ export function SettingsDialog({ settings, open, initialTab, onClose, onSave }: 
                   {isSetupItemIncomplete(setupDraft, 'ditModelFolder') && <SetupDot />}
                   DiT model folder
                   <FieldHintIcon title="DiT model folder">
-                    I2V / FLF2V / LOOP High and Low DiT dropdowns list models from this folder.
+                    Set the Wan2.2 folder that contains checkpoints.
+                    <br />
+                    e.g. <code>{'{your comfyui folder}\\models\\diffusion_models\\Wan'}</code>
                   </FieldHintIcon>
                 </span>
                 <div className="field-row">
@@ -396,7 +434,17 @@ export function SettingsDialog({ settings, open, initialTab, onClose, onSave }: 
                   >
                     Browse
                   </button>
+                  <ModelPackDownloadButton
+                    {...packDownloadProps('dit')}
+                    visible={!gd.ditModelFolder.trim()}
+                    onDone={(path) => {
+                      patchSharedComfy({ ditModelFolder: path })
+                      setPackProgress(null)
+                      setTestErr(null)
+                    }}
+                  />
                 </div>
+                {packProgressHint('dit')}
               </label>
 
               <label className="field">
@@ -404,7 +452,9 @@ export function SettingsDialog({ settings, open, initialTab, onClose, onSave }: 
                   {isSetupItemIncomplete(setupDraft, 'speedLoraFolder') && <SetupDot />}
                   Speed LoRA folder
                   <FieldHintIcon title="Speed LoRA folder">
-                    Generate panels pick Speed LoRA (high / low) from this folder.
+                    Set the folder that contains Speed LoRA (lightx2v) models.
+                    <br />
+                    e.g. <code>{'{your comfyui folder}\\models\\loras\\Speed'}</code>
                   </FieldHintIcon>
                 </span>
                 <div className="field-row">
@@ -425,7 +475,17 @@ export function SettingsDialog({ settings, open, initialTab, onClose, onSave }: 
                   >
                     Browse
                   </button>
+                  <ModelPackDownloadButton
+                    {...packDownloadProps('speedLora')}
+                    visible={!gd.speedLoraFolder.trim()}
+                    onDone={(path) => {
+                      patchSharedComfy({ speedLoraFolder: path })
+                      setPackProgress(null)
+                      setTestErr(null)
+                    }}
+                  />
                 </div>
+                {packProgressHint('speedLora')}
               </label>
 
               <label className="field">
@@ -433,7 +493,9 @@ export function SettingsDialog({ settings, open, initialTab, onClose, onSave }: 
                   {isSetupItemIncomplete(setupDraft, 'wan22LoraFolder') && <SetupDot />}
                   Wan22 LoRA folder
                   <FieldHintIcon title="Wan22 LoRA folder">
-                    Extra LoRAs on the generate panels are chosen from this folder.
+                    Set the Wan2.2 folder that contains extra LoRA models.
+                    <br />
+                    e.g. <code>{'{your comfyui folder}\\models\\loras\\Wan'}</code>
                   </FieldHintIcon>
                 </span>
                 <div className="field-row">
@@ -454,7 +516,18 @@ export function SettingsDialog({ settings, open, initialTab, onClose, onSave }: 
                   >
                     Browse
                   </button>
+                  <ModelPackDownloadButton
+                    {...packDownloadProps('wan22Lora')}
+                    visible={!gd.wan22LoraFolder.trim()}
+                    label="Create empty folder"
+                    onDone={(path) => {
+                      patchSharedComfy({ wan22LoraFolder: path })
+                      setPackProgress(null)
+                      setTestErr(null)
+                    }}
+                  />
                 </div>
+                {packProgressHint('wan22Lora')}
               </label>
 
               <label className="field">
@@ -462,7 +535,10 @@ export function SettingsDialog({ settings, open, initialTab, onClose, onSave }: 
                   {isSetupItemIncomplete(setupDraft, 'upscaleModelFolder') && <SetupDot />}
                   Upscale model folder
                   <FieldHintIcon title="Upscale model folder">
-                    Upscale page model dropdown lists files from this folder.
+                    Set the folder that contains upscale model weights.
+                    <br />
+                    e.g.{' '}
+                    <code>{'{your comfyui folder}\\models\\upscale_models'}</code>
                   </FieldHintIcon>
                 </span>
                 <div className="field-row">
@@ -483,7 +559,17 @@ export function SettingsDialog({ settings, open, initialTab, onClose, onSave }: 
                   >
                     Browse
                   </button>
+                  <ModelPackDownloadButton
+                    {...packDownloadProps('upscale')}
+                    visible={!gd.upscaleModelFolder.trim()}
+                    onDone={(path) => {
+                      patchSharedComfy({ upscaleModelFolder: path })
+                      setPackProgress(null)
+                      setTestErr(null)
+                    }}
+                  />
                 </div>
+                {packProgressHint('upscale')}
               </label>
 
               <label className="field">
@@ -491,7 +577,10 @@ export function SettingsDialog({ settings, open, initialTab, onClose, onSave }: 
                   {isSetupItemIncomplete(setupDraft, 'frameInterpModelFolder') && <SetupDot />}
                   Frame Interpolation model folder
                   <FieldHintIcon title="Frame Interpolation model folder">
-                    Upscale page Interpolation model dropdown lists files from this folder.
+                    Set the folder that contains frame interpolation models.
+                    <br />
+                    e.g.{' '}
+                    <code>{'{your comfyui folder}\\models\\frame_interpolation'}</code>
                   </FieldHintIcon>
                 </span>
                 <div className="field-row">
@@ -512,13 +601,31 @@ export function SettingsDialog({ settings, open, initialTab, onClose, onSave }: 
                   >
                     Browse
                   </button>
+                  <ModelPackDownloadButton
+                    {...packDownloadProps('frameInterp')}
+                    visible={!gd.frameInterpModelFolder.trim()}
+                    onDone={(path) => {
+                      patchSharedComfy({ frameInterpModelFolder: path })
+                      setPackProgress(null)
+                      setTestErr(null)
+                    }}
+                  />
                 </div>
+                {packProgressHint('frameInterp')}
               </label>
 
               <label className="field">
                 <span>
                   {isSetupItemIncomplete(setupDraft, 'vaePath') && <SetupDot />}
                   VAE
+                  <FieldHintIcon title="VAE">
+                    Set the Wan2.2 VAE checkpoint file.
+                    <br />
+                    e.g.{' '}
+                    <code>
+                      {'{your comfyui folder}\\models\\vae\\wan_2.1_vae.safetensors'}
+                    </code>
+                  </FieldHintIcon>
                 </span>
                 <div className="field-row">
                   <input
@@ -538,13 +645,33 @@ export function SettingsDialog({ settings, open, initialTab, onClose, onSave }: 
                   >
                     Browse
                   </button>
+                  <ModelPackDownloadButton
+                    {...packDownloadProps('vae')}
+                    visible={!gd.vaePath.trim()}
+                    onDone={(path) => {
+                      patchSharedComfy({ vaePath: path })
+                      setPackProgress(null)
+                      setTestErr(null)
+                    }}
+                  />
                 </div>
+                {packProgressHint('vae')}
               </label>
 
               <label className="field">
                 <span>
                   {isSetupItemIncomplete(setupDraft, 'clipPath') && <SetupDot />}
                   CLIP / UMT5
+                  <FieldHintIcon title="CLIP / UMT5">
+                    Set the Wan2.2 CLIP / UMT5 text encoder file.
+                    <br />
+                    e.g.{' '}
+                    <code>
+                      {
+                        '{your comfyui folder}\\models\\text_encoders\\umt5_xxl_fp8_e4m3fn_scaled.safetensors'
+                      }
+                    </code>
+                  </FieldHintIcon>
                 </span>
                 <div className="field-row">
                   <input
@@ -564,7 +691,17 @@ export function SettingsDialog({ settings, open, initialTab, onClose, onSave }: 
                   >
                     Browse
                   </button>
+                  <ModelPackDownloadButton
+                    {...packDownloadProps('clip')}
+                    visible={!gd.clipPath.trim()}
+                    onDone={(path) => {
+                      patchSharedComfy({ clipPath: path })
+                      setPackProgress(null)
+                      setTestErr(null)
+                    }}
+                  />
                 </div>
+                {packProgressHint('clip')}
               </label>
             </>
           )}

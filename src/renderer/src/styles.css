@@ -3718,6 +3718,27 @@ button.danger.kbd-focus {
   border-left: none;
 }
 
+.prompt-preset-header {
+  margin-bottom: 0.15rem;
+}
+
+.prompt-preset-header .caption-header-actions {
+  flex: 1;
+  min-width: 0;
+  justify-content: stretch;
+}
+
+.prompt-preset-select {
+  width: 100%;
+  min-width: 0;
+  background: var(--bg-input);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 0.3rem 0.5rem;
+  color: var(--text);
+  font-size: 0.85rem;
+}
+
 .prompt-actions {
   display: flex;
   gap: 0.5rem;

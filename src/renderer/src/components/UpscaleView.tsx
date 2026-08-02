@@ -10,6 +10,7 @@ import {
 } from '../services/comfyUpscale'
 import { unloadLocalAiModels } from '../services/unloadLocalAi'
 import { useArrowListNav } from '../hooks/useArrowListNav'
+import { useBackdropDismiss } from '../hooks/useBackdropDismiss'
 import { ResourceMonitorPane } from './ResourceMonitorPane'
 import { SearchableSelect } from './SearchableSelect'
 import {
@@ -90,6 +91,9 @@ export function UpscaleView({
     },
     [onDraftChange]
   )
+
+  const dismissVideoPicker = useCallback(() => setVideoPickerOpen(false), [])
+  const videoPickerBackdrop = useBackdropDismiss(dismissVideoPicker)
 
   const refreshGallery = useCallback(async () => {
     const folder = sharedRef.current.outputFolder.trim()
@@ -730,7 +734,7 @@ export function UpscaleView({
         <div
           className="modal-backdrop"
           role="presentation"
-          onClick={() => setVideoPickerOpen(false)}
+          {...videoPickerBackdrop}
           onKeyDown={(e) => {
             if (e.key === 'Escape') setVideoPickerOpen(false)
           }}
@@ -740,7 +744,6 @@ export function UpscaleView({
             role="dialog"
             aria-modal="true"
             aria-label="Choose video"
-            onClick={(e) => e.stopPropagation()}
           >
             <div className="generate-image-picker-header">
               <h2>Choose video</h2>

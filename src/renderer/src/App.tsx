@@ -16,6 +16,7 @@ import { parseSidecarCaption } from './utils/sidecarCaption'
 import { SettingsDialog, type SettingsTab } from './components/SettingsDialog'
 import { PromptView } from './components/PromptView'
 import { GenerateView } from './components/GenerateView'
+import { SharedGenerateGalleryProvider } from './components/SharedGenerateGalleryContext'
 import { UpscaleView } from './components/UpscaleView'
 import { setLocalAiBlocked } from './services/localAiGate'
 import {
@@ -416,77 +417,82 @@ export function App() {
         />
       </div>
 
-      <div
-        className="app-view-slot"
-        style={{ display: settings.activeView === 'i2v' ? undefined : 'none' }}
-        aria-hidden={settings.activeView !== 'i2v'}
+      <SharedGenerateGalleryProvider
+        outputFolder={settings.sharedComfy.outputFolder}
+        onStatus={onStatus}
       >
-        <GenerateView
-          panel="i2v"
-          active={settings.activeView === 'i2v'}
-          settings={settings}
-          sharedComfy={settings.sharedComfy}
-          draft={settings.i2vDraft}
-          startImagePath={settings.promptImagePath}
-          promptText={settings.promptText}
-          promptImages={promptImages}
-          onSelectStartImage={onSelectStartImage}
-          onSharedComfyChange={onSharedComfyChange}
-          onDraftChange={(d) => onI2vDraftChange(d as I2vGenerateDraft)}
-          onStatus={onStatus}
-          onOpenSettings={openSettings}
-          videoGenerating={videoGenerating}
-          onVideoGeneratingChange={onVideoGeneratingChange}
-        />
-      </div>
+        <div
+          className="app-view-slot"
+          style={{ display: settings.activeView === 'i2v' ? undefined : 'none' }}
+          aria-hidden={settings.activeView !== 'i2v'}
+        >
+          <GenerateView
+            panel="i2v"
+            active={settings.activeView === 'i2v'}
+            settings={settings}
+            sharedComfy={settings.sharedComfy}
+            draft={settings.i2vDraft}
+            startImagePath={settings.promptImagePath}
+            promptText={settings.promptText}
+            promptImages={promptImages}
+            onSelectStartImage={onSelectStartImage}
+            onSharedComfyChange={onSharedComfyChange}
+            onDraftChange={(d) => onI2vDraftChange(d as I2vGenerateDraft)}
+            onStatus={onStatus}
+            onOpenSettings={openSettings}
+            videoGenerating={videoGenerating}
+            onVideoGeneratingChange={onVideoGeneratingChange}
+          />
+        </div>
 
-      <div
-        className="app-view-slot"
-        style={{ display: settings.activeView === 'flf2v' ? undefined : 'none' }}
-        aria-hidden={settings.activeView !== 'flf2v'}
-      >
-        <GenerateView
-          panel="flf2v"
-          active={settings.activeView === 'flf2v'}
-          settings={settings}
-          sharedComfy={settings.sharedComfy}
-          draft={settings.flf2vDraft}
-          startImagePath={settings.promptImagePath}
-          promptText={settings.promptText}
-          promptImages={promptImages}
-          onSelectStartImage={onSelectStartImage}
-          onSharedComfyChange={onSharedComfyChange}
-          onDraftChange={(d) => onFlf2vDraftChange(d as Flf2vGenerateDraft)}
-          onStatus={onStatus}
-          onOpenSettings={openSettings}
-          videoGenerating={videoGenerating}
-          onVideoGeneratingChange={onVideoGeneratingChange}
-        />
-      </div>
+        <div
+          className="app-view-slot"
+          style={{ display: settings.activeView === 'flf2v' ? undefined : 'none' }}
+          aria-hidden={settings.activeView !== 'flf2v'}
+        >
+          <GenerateView
+            panel="flf2v"
+            active={settings.activeView === 'flf2v'}
+            settings={settings}
+            sharedComfy={settings.sharedComfy}
+            draft={settings.flf2vDraft}
+            startImagePath={settings.promptImagePath}
+            promptText={settings.promptText}
+            promptImages={promptImages}
+            onSelectStartImage={onSelectStartImage}
+            onSharedComfyChange={onSharedComfyChange}
+            onDraftChange={(d) => onFlf2vDraftChange(d as Flf2vGenerateDraft)}
+            onStatus={onStatus}
+            onOpenSettings={openSettings}
+            videoGenerating={videoGenerating}
+            onVideoGeneratingChange={onVideoGeneratingChange}
+          />
+        </div>
 
-      <div
-        className="app-view-slot"
-        style={{ display: settings.activeView === 'loop' ? undefined : 'none' }}
-        aria-hidden={settings.activeView !== 'loop'}
-      >
-        <GenerateView
-          panel="loop"
-          active={settings.activeView === 'loop'}
-          settings={settings}
-          sharedComfy={settings.sharedComfy}
-          draft={settings.loopDraft}
-          startImagePath={settings.promptImagePath}
-          promptText={settings.promptText}
-          promptImages={promptImages}
-          onSelectStartImage={onSelectStartImage}
-          onSharedComfyChange={onSharedComfyChange}
-          onDraftChange={(d) => onLoopDraftChange(d as LoopGenerateDraft)}
-          onStatus={onStatus}
-          onOpenSettings={openSettings}
-          videoGenerating={videoGenerating}
-          onVideoGeneratingChange={onVideoGeneratingChange}
-        />
-      </div>
+        <div
+          className="app-view-slot"
+          style={{ display: settings.activeView === 'loop' ? undefined : 'none' }}
+          aria-hidden={settings.activeView !== 'loop'}
+        >
+          <GenerateView
+            panel="loop"
+            active={settings.activeView === 'loop'}
+            settings={settings}
+            sharedComfy={settings.sharedComfy}
+            draft={settings.loopDraft}
+            startImagePath={settings.promptImagePath}
+            promptText={settings.promptText}
+            promptImages={promptImages}
+            onSelectStartImage={onSelectStartImage}
+            onSharedComfyChange={onSharedComfyChange}
+            onDraftChange={(d) => onLoopDraftChange(d as LoopGenerateDraft)}
+            onStatus={onStatus}
+            onOpenSettings={openSettings}
+            videoGenerating={videoGenerating}
+            onVideoGeneratingChange={onVideoGeneratingChange}
+          />
+        </div>
+      </SharedGenerateGalleryProvider>
 
       <div
         className="app-view-slot"

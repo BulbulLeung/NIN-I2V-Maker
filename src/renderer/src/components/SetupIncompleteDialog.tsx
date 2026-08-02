@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react'
 import type { SetupIncompleteItem } from '../utils/setupCompleteness'
+import { useBackdropDismiss } from '../hooks/useBackdropDismiss'
 
 interface Props {
   open: boolean
@@ -44,16 +45,17 @@ export function SetupIncompleteDialog({ open, items, onClose, onOpenSettings }: 
     return () => window.removeEventListener('keydown', onKey, true)
   }, [open, focused, onClose, onOpenSettings])
 
+  const backdrop = useBackdropDismiss(onClose)
+
   if (!open) return null
 
   return (
-    <div className="modal-backdrop" role="presentation" onClick={onClose}>
+    <div className="modal-backdrop" role="presentation" {...backdrop}>
       <div
         className="modal confirm-modal setup-incomplete-modal"
         role="dialog"
         aria-modal="true"
         aria-label="Setup incomplete"
-        onClick={(e) => e.stopPropagation()}
       >
         <h2>Setup incomplete</h2>
         <p className="confirm-modal-message">

@@ -23,6 +23,7 @@ import {
 } from '../services/comfyWan22Loop'
 import { parentDir } from '../services/comfyI2v'
 import { useArrowListNav, isTextEntryTarget } from '../hooks/useArrowListNav'
+import { useBackdropDismiss } from '../hooks/useBackdropDismiss'
 import { unloadLocalAiModels } from '../services/unloadLocalAi'
 import { ResourceMonitorPane } from './ResourceMonitorPane'
 import { ExtraLoraDialog } from './ExtraLoraDialog'
@@ -46,6 +47,10 @@ import {
   type SetupSettingsTab
 } from '../utils/setupCompleteness'
 import { SetupIncompleteDialog } from './SetupIncompleteDialog'
+import {
+  useSharedGenerateGallery,
+  type GalleryVideoMeta
+} from './SharedGenerateGalleryContext'
 
 type Panel = 'i2v' | 'flf2v' | 'loop'
 
@@ -73,23 +78,6 @@ interface Props {
   onVideoGeneratingChange?: (generating: boolean) => void
 }
 
-interface GalleryVideo {
-  path: string
-  name: string
-  mtimeMs: number
-}
-
-interface VideoMeta {
-  name: string
-  sizeBytes: number
-  width: number | null
-  height: number | null
-  codec: string | null
-  bitDepth: number | null
-  container: string | null
-  seed: number | null
-}
-
 function formatFileSize(bytes: number): string {
   if (bytes < 1024) return `${bytes} B`
   if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`
@@ -97,7 +85,7 @@ function formatFileSize(bytes: number): string {
   return `${(bytes / (1024 * 1024 * 1024)).toFixed(2)} GB`
 }
 
-function formatVideoMetaLine(meta: VideoMeta): string {
+function formatVideoMetaLine(meta: GalleryVideoMeta): string {
   const parts: string[] = []
   if (meta.seed != null) parts.push(`seed ${meta.seed}`)
   if (meta.width && meta.height) parts.push(`${meta.width}×${meta.height}`)
@@ -173,9 +161,15 @@ export function GenerateView({
   const [batchProgress, setBatchProgress] = useState<{ current: number; total: number } | null>(
     null
   )
-  const [videos, setVideos] = useState<GalleryVideo[]>([])
-  const [selectedVideo, setSelectedVideo] = useState<string | null>(null)
-  const [videoMeta, setVideoMeta] = useState<VideoMeta | null>(null)
+  const {
+    videos,
+    selectedVideo,
+    videoMeta,
+    setSelectedVideo,
+    setVideos,
+    setVideoMeta,
+    refreshGallery
+  } = useSharedGenerateGallery()
   const [monitorDevice, setMonitorDevice] = useState('cuda:0')
 
   const [resolvedSize, setResolvedSize] = useState<{ width: number; height: number }>({
@@ -221,6 +215,9 @@ export function GenerateView({
   const selectGalleryVideo = useCallback((path: string) => {
     setSelectedVideo(path)
   }, [])
+
+  const dismissImagePicker = useCallback(() => setImagePicker(null), [])
+  const imagePickerBackdrop = useBackdropDismiss(dismissImagePicker)
 
   const selectPickerImage = useCallback(
     (path: string) => {
@@ -441,82 +438,6 @@ export function GenerateView({
       cancelled = true
     }
   }, [])
-
-  const refreshGallery = useCallback(async () => {
-    const folder = sharedRef.current.outputFolder.trim()
-    if (!folder) {
-      setVideos([])
-      setSelectedVideo(null)
-      setVideoMeta(null)
-      return
-    }
-    try {
-      const res = await window.api.galleryListVideos({ outputFolder: folder })
-      if (!res.ok) {
-        onStatus(res.error || 'Failed to list gallery videos', true)
-        return
-      }
-      setVideos(res.videos)
-      setSelectedVideo((prev) =>
-        prev && res.videos.some((v) => v.path === prev)
-          ? prev
-          : (res.videos[0]?.path ?? null)
-      )
-    } catch (err) {
-      onStatus(err instanceof Error ? err.message : String(err), true)
-    }
-  }, [onStatus])
-
-  useEffect(() => {
-    void refreshGallery()
-  }, [sharedComfy.outputFolder, refreshGallery])
-
-  useEffect(() => {
-    if (!selectedVideo) {
-      setVideoMeta(null)
-      return
-    }
-    let cancelled = false
-    void (async () => {
-      try {
-        const res = await window.api.galleryProbeVideo({ path: selectedVideo })
-        if (cancelled) return
-        if (res.ok && res.info) {
-          setVideoMeta({
-            name: res.info.name,
-            sizeBytes: res.info.sizeBytes,
-            width: res.info.width,
-            height: res.info.height,
-            codec: res.info.codec,
-            bitDepth: res.info.bitDepth,
-            container: res.info.container,
-            seed: res.info.seed ?? null
-          })
-        } else {
-          const fallback = videos.find((v) => v.path === selectedVideo)
-          setVideoMeta(
-            fallback
-              ? {
-                  name: fallback.name,
-                  sizeBytes: 0,
-                  width: null,
-                  height: null,
-                  codec: null,
-                  bitDepth: null,
-                  container: null,
-                  seed: null
-                }
-              : null
-          )
-        }
-      } catch {
-        if (!cancelled) setVideoMeta(null)
-      }
-    })()
-    return () => {
-      cancelled = true
-    }
-  }, [selectedVideo, videos])
 
   useEffect(() => {
     if (!active && !generating) return
@@ -1461,122 +1382,126 @@ export function GenerateView({
           </div>
         </aside>
 
-        <section className="generate-gallery">
-          <div className="generate-gallery-header">
-            <span>
-              {videos.length} video{videos.length === 1 ? '' : 's'}
-              {sharedComfy.outputFolder ? ` · ${sharedComfy.outputFolder}` : ''}
-            </span>
-            <div className="generate-gallery-header-actions">
-              <button type="button" onClick={() => void refreshGallery()}>
-                Refresh
-              </button>
-              <button
-                type="button"
-                disabled={!sharedComfy.outputFolder.trim()}
-                onClick={() => {
-                  void window.api.openPathInExplorer(sharedComfy.outputFolder.trim())
-                }}
-              >
-                Open folder
-              </button>
-            </div>
-          </div>
-
-          <div className="generate-video-player">
-            {selectedVideo ? (
-              <>
-                <video
-                  key={selectedVideo}
-                  src={window.api.toLocalUrl(selectedVideo)}
-                  controls
-                  autoPlay
-                  loop
-                  onLoadedMetadata={(e) => {
-                    const el = e.currentTarget
-                    const w = el.videoWidth
-                    const h = el.videoHeight
-                    if (!w || !h) return
-                    setVideoMeta((prev) => {
-                      if (!prev) return prev
-                      if (prev.width && prev.height) return prev
-                      return { ...prev, width: w, height: h }
-                    })
-                  }}
-                />
-                {videoMeta ? (
-                  <div className="generate-video-meta">
-                    <button
-                      type="button"
-                      className="generate-use-seed-btn"
-                      disabled={videoMeta.seed == null}
-                      title={
-                        videoMeta.seed != null
-                          ? `Copy seed ${videoMeta.seed} into Seed field`
-                          : 'No seed in filename'
-                      }
-                      onClick={() => {
-                        if (videoMeta.seed == null) return
-                        patchDraft({ seed: videoMeta.seed })
-                        onStatus(`Seed set to ${videoMeta.seed}`)
-                      }}
-                    >
-                      Use Seed
-                    </button>
-                    <div className="generate-video-meta-text">
-                      <div className="generate-video-meta-name" title={videoMeta.name}>
-                        {videoMeta.name}
-                      </div>
-                      <div className="generate-video-meta-details">
-                        {formatVideoMetaLine(videoMeta)}
-                      </div>
-                    </div>
-                  </div>
-                ) : null}
-              </>
-            ) : (
-              <div className="generate-video-player-empty">
-                {videos.length > 0
-                  ? 'Select a video below to preview'
-                  : sharedComfy.outputFolder
-                    ? 'No videos in output folder yet'
-                    : 'Choose an output folder in Settings'}
-              </div>
-            )}
-          </div>
-
-          <div className="i2v-gallery" ref={galleryRef}>
-            {videos.length === 0 ? (
-              <div className="i2v-gallery-empty">No videos</div>
-            ) : (
-              videos.map((v) => (
+        {active ? (
+          <section className="generate-gallery">
+            <div className="generate-gallery-header">
+              <span>
+                {videos.length} video{videos.length === 1 ? '' : 's'}
+                {sharedComfy.outputFolder ? ` · ${sharedComfy.outputFolder}` : ''}
+              </span>
+              <div className="generate-gallery-header-actions">
+                <button type="button" onClick={() => void refreshGallery()}>
+                  Refresh
+                </button>
                 <button
-                  key={v.path}
                   type="button"
-                  data-nav-id={v.path}
-                  className={`i2v-gallery-item${v.path === selectedVideo ? ' active' : ''}`}
-                  onClick={() => setSelectedVideo(v.path)}
-                  title={v.name}
+                  disabled={!sharedComfy.outputFolder.trim()}
+                  onClick={() => {
+                    void window.api.openPathInExplorer(sharedComfy.outputFolder.trim())
+                  }}
                 >
+                  Open folder
+                </button>
+              </div>
+            </div>
+
+            <div className="generate-video-player">
+              {selectedVideo ? (
+                <>
                   <video
-                    src={window.api.toLocalUrl(v.path)}
-                    muted
+                    key={selectedVideo}
+                    src={window.api.toLocalUrl(selectedVideo)}
+                    controls
+                    autoPlay
                     loop
-                    playsInline
-                    preload="metadata"
-                    onMouseEnter={(e) => {
-                      void e.currentTarget.play().catch(() => undefined)
-                    }}
-                    onMouseLeave={(e) => {
-                      e.currentTarget.pause()
-                      e.currentTarget.currentTime = 0
+                    onLoadedMetadata={(e) => {
+                      const el = e.currentTarget
+                      const w = el.videoWidth
+                      const h = el.videoHeight
+                      if (!w || !h) return
+                      setVideoMeta((prev) => {
+                        if (!prev) return prev
+                        if (prev.width && prev.height) return prev
+                        return { ...prev, width: w, height: h }
+                      })
                     }}
                   />
-                </button>
-              ))
-            )}
-          </div>
-        </section>
+                  {videoMeta ? (
+                    <div className="generate-video-meta">
+                      <button
+                        type="button"
+                        className="generate-use-seed-btn"
+                        disabled={videoMeta.seed == null}
+                        title={
+                          videoMeta.seed != null
+                            ? `Copy seed ${videoMeta.seed} into Seed field`
+                            : 'No seed in filename'
+                        }
+                        onClick={() => {
+                          if (videoMeta.seed == null) return
+                          patchDraft({ seed: videoMeta.seed })
+                          onStatus(`Seed set to ${videoMeta.seed}`)
+                        }}
+                      >
+                        Use Seed
+                      </button>
+                      <div className="generate-video-meta-text">
+                        <div className="generate-video-meta-name" title={videoMeta.name}>
+                          {videoMeta.name}
+                        </div>
+                        <div className="generate-video-meta-details">
+                          {formatVideoMetaLine(videoMeta)}
+                        </div>
+                      </div>
+                    </div>
+                  ) : null}
+                </>
+              ) : (
+                <div className="generate-video-player-empty">
+                  {videos.length > 0
+                    ? 'Select a video below to preview'
+                    : sharedComfy.outputFolder
+                      ? 'No videos in output folder yet'
+                      : 'Choose an output folder in Settings'}
+                </div>
+              )}
+            </div>
+
+            <div className="i2v-gallery" ref={galleryRef}>
+              {videos.length === 0 ? (
+                <div className="i2v-gallery-empty">No videos</div>
+              ) : (
+                videos.map((v) => (
+                  <button
+                    key={v.path}
+                    type="button"
+                    data-nav-id={v.path}
+                    className={`i2v-gallery-item${v.path === selectedVideo ? ' active' : ''}`}
+                    onClick={() => setSelectedVideo(v.path)}
+                    title={v.name}
+                  >
+                    <video
+                      src={window.api.toLocalUrl(v.path)}
+                      muted
+                      loop
+                      playsInline
+                      preload="metadata"
+                      onMouseEnter={(e) => {
+                        void e.currentTarget.play().catch(() => undefined)
+                      }}
+                      onMouseLeave={(e) => {
+                        e.currentTarget.pause()
+                        e.currentTarget.currentTime = 0
+                      }}
+                    />
+                  </button>
+                ))
+              )}
+            </div>
+          </section>
+        ) : (
+          <section className="generate-gallery" aria-hidden />
+        )}
 
         <aside className="generate-monitor">
           <ResourceMonitorPane device={monitorDevice} active={active} />
@@ -1621,7 +1546,7 @@ export function GenerateView({
         <div
           className="modal-backdrop"
           role="presentation"
-          onClick={() => setImagePicker(null)}
+          {...imagePickerBackdrop}
           onKeyDown={(e) => {
             if (e.key === 'Escape') setImagePicker(null)
           }}
@@ -1631,7 +1556,6 @@ export function GenerateView({
             role="dialog"
             aria-modal="true"
             aria-label={imagePicker === 'end' ? 'Choose end frame' : 'Choose image'}
-            onClick={(e) => e.stopPropagation()}
           >
             <div className="generate-image-picker-header">
               <h2>

@@ -279,6 +279,26 @@ const api = {
     return () => ipcRenderer.removeListener('comfy:installProgress', listener)
   },
 
+  downloadModelPack: (opts: {
+    packId: string
+    downloadFolder?: string
+  }): Promise<{ ok: boolean; path?: string; message: string }> =>
+    ipcRenderer.invoke('models:download', opts),
+
+  cancelModelDownload: (): Promise<{ ok: boolean }> =>
+    ipcRenderer.invoke('models:cancelDownload'),
+
+  onModelDownloadProgress: (
+    cb: (payload: { packId: string; message: string; pct: number }) => void
+  ) => {
+    const listener = (
+      _e: IpcRendererEvent,
+      payload: { packId: string; message: string; pct: number }
+    ) => cb(payload)
+    ipcRenderer.on('models:downloadProgress', listener)
+    return () => ipcRenderer.removeListener('models:downloadProgress', listener)
+  },
+
   startComfyUi: (opts: {
     batPath: string
     pythonPath?: string

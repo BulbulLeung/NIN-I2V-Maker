@@ -24,6 +24,11 @@ import {
   probePython,
   pythonInstallRunning
 } from './pythonEnv'
+import {
+  cancelModelDownload,
+  downloadModelPack,
+  modelDownloadRunning
+} from './modelDownloads'
 import { getResourceStats, killProcessByPid } from './resourceStats'
 import { probeVideoFile, type VideoProbeInfo } from './videoProbe'
 import { readImagePositivePrompt } from './imagePromptMeta'
@@ -1247,6 +1252,20 @@ app.whenReady().then(async () => {
         onProgress: (p) => {
           mainWindow?.webContents.send('comfy:installProgress', p)
         }
+      })
+    }
+  )
+
+  ipcMain.handle('models:cancelDownload', async () => cancelModelDownload())
+
+  ipcMain.handle(
+    'models:download',
+    async (_event, opts: { packId: string; downloadFolder?: string }) => {
+      if (modelDownloadRunning()) {
+        return { ok: false, message: 'A model download is already running' }
+      }
+      return downloadModelPack(opts.packId, opts.downloadFolder, (p) => {
+        mainWindow?.webContents.send('models:downloadProgress', p)
       })
     }
   )

@@ -2,6 +2,7 @@ import type { ExtraLoraEntry } from '../types'
 import { createExtraLoraEntry } from '../defaults/i2vGenerate'
 import { basenamePath } from '../services/comfyI2v'
 import { splitModelsByHighLow } from '../utils/highLowModelSplit'
+import { useBackdropDismiss } from '../hooks/useBackdropDismiss'
 import { SearchableSelect } from './SearchableSelect'
 
 interface ModelFile {
@@ -127,18 +128,19 @@ export function ExtraLoraDialog({
   onChangeLow,
   onClose
 }: Props) {
+  const backdrop = useBackdropDismiss(onClose)
+
   if (!open) return null
 
   const { high: highModels, low: lowModels } = splitModelsByHighLow(models)
 
   return (
-    <div className="modal-backdrop" role="presentation" onClick={onClose}>
+    <div className="modal-backdrop" role="presentation" {...backdrop}>
       <div
         className="modal modal-wide lora-popup-modal"
         role="dialog"
         aria-modal="true"
         aria-label="Extra LoRAs"
-        onClick={(e) => e.stopPropagation()}
       >
         <div className="lora-popup-header">
           <h2>Extra LoRAs</h2>

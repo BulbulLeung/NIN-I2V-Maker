@@ -1,4 +1,5 @@
 import { useEffect, useState } from 'react'
+import { useBackdropDismiss } from '../hooks/useBackdropDismiss'
 
 interface Props {
   open: boolean
@@ -54,17 +55,13 @@ export function ConfirmDialog({
     return () => window.removeEventListener('keydown', onKey, true)
   }, [open, focused, onCancel, onConfirm])
 
+  const backdrop = useBackdropDismiss(onCancel)
+
   if (!open) return null
 
   return (
-    <div className="modal-backdrop" role="presentation" onClick={onCancel}>
-      <div
-        className="modal confirm-modal"
-        role="dialog"
-        aria-modal="true"
-        aria-label={title}
-        onClick={(e) => e.stopPropagation()}
-      >
+    <div className="modal-backdrop" role="presentation" {...backdrop}>
+      <div className="modal confirm-modal" role="dialog" aria-modal="true" aria-label={title}>
         <h2>{title}</h2>
         <p className="confirm-modal-message">{message}</p>
         <div className="modal-actions">
