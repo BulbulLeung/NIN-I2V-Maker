@@ -537,17 +537,6 @@ export function PromptView({
       />
 
       <section className="center-pane">
-        <div className="preview-toolbar">
-          <div className="preview-toolbar-left">
-            {selected ? selected.name : 'No image selected'}
-            {dirty ? <span className="dirty-flag"> • unsaved</span> : null}
-          </div>
-          <div className="preview-toolbar-right">
-            <span className="image-count">
-              {images.length} image{images.length === 1 ? '' : 's'}
-            </span>
-          </div>
-        </div>
         <div className="prompt-preview-stage">
           {previewUrl ? (
             <img className="prompt-preview-img" src={previewUrl} alt={selected?.name ?? ''} />

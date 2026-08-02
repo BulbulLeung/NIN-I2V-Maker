@@ -17,18 +17,29 @@ import {
 } from '../types'
 import { createDefaultPromptPreset } from '../defaults/i2vPromptPresets'
 import { listModels, testConnection } from '../services/translation'
+import {
+  isSetupItemIncomplete,
+  tabHasIncompleteSetup
+} from '../utils/setupCompleteness'
 import { DownloadFolderField } from './DownloadFolderField'
 import { PythonExecutableField } from './PythonExecutableField'
 import { ComfyUiBatField } from './ComfyUiBatField'
+import { FieldHintIcon } from './FieldHintIcon'
+
+export type SettingsTab = 'ai' | 'presets' | 'ui' | 'comfy' | 'wan22'
 
 interface Props {
   settings: AppSettings
   open: boolean
+  /** When set, open on this tab instead of Local AI. */
+  initialTab?: SettingsTab | null
   onClose: () => void
   onSave: (partial: Partial<AppSettings>) => void
 }
 
-type SettingsTab = 'ai' | 'presets' | 'ui' | 'comfy'
+function SetupDot() {
+  return <span className="setup-required-dot" aria-hidden="true" />
+}
 
 function newPresetId(): string {
   return `preset-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 6)}`
@@ -44,9 +55,8 @@ async function browseSafetensors(title: string): Promise<string | null> {
   })
 }
 
-export function SettingsDialog({ settings, open, onClose, onSave }: Props) {
+export function SettingsDialog({ settings, open, initialTab, onClose, onSave }: Props) {
   const [tab, setTab] = useState<SettingsTab>('ai')
-  const [draft, setDraft] = useState(settings)
   const [modelList, setModelList] = useState<string[]>([])
   const [testMsg, setTestMsg] = useState<string | null>(null)
   const [testErr, setTestErr] = useState<string | null>(null)
@@ -54,37 +64,45 @@ export function SettingsDialog({ settings, open, onClose, onSave }: Props) {
 
   useEffect(() => {
     if (!open) return
-    setDraft(settings)
-    setTab('ai')
+    setTab(initialTab ?? 'ai')
     setModelList([])
     setTestMsg(null)
     setTestErr(null)
-  }, [open, settings])
+  }, [open, initialTab])
 
   const activePreset = useMemo(() => {
     return (
-      draft.promptPresets.find((p) => p.id === draft.activePromptPresetId) ??
-      draft.promptPresets[0] ??
+      settings.promptPresets.find((p) => p.id === settings.activePromptPresetId) ??
+      settings.promptPresets[0] ??
       null
     )
-  }, [draft.promptPresets, draft.activePromptPresetId])
+  }, [settings.promptPresets, settings.activePromptPresetId])
 
   if (!open) return null
 
+  const setupDraft = {
+    pythonPath: settings.pythonPath,
+    sharedComfy: settings.sharedComfy
+  }
+  const wan22Incomplete = tabHasIncompleteSetup(setupDraft, 'wan22')
+  const comfyIncomplete = tabHasIncompleteSetup(setupDraft, 'comfy')
+  const uiIncomplete = tabHasIncompleteSetup(setupDraft, 'ui')
+
   const patch = (partial: Partial<AppSettings>) => {
-    setDraft((prev) => ({ ...prev, ...partial }))
+    if (partial.uiGpuMode !== undefined) {
+      onSave({ ...partial, disableUiGpu: partial.uiGpuMode === 'software' })
+      return
+    }
+    onSave(partial)
   }
 
   const patchSharedComfy = (partial: Partial<SharedComfyDraft>) => {
-    setDraft((prev) => ({
-      ...prev,
-      sharedComfy: { ...prev.sharedComfy, ...partial }
-    }))
+    onSave({ sharedComfy: { ...settings.sharedComfy, ...partial } })
   }
 
   const updatePreset = (id: string, partial: Partial<PromptPreset>) => {
     patch({
-      promptPresets: draft.promptPresets.map((p) =>
+      promptPresets: settings.promptPresets.map((p) =>
         p.id === id ? { ...p, ...partial } : p
       )
     })
@@ -97,17 +115,17 @@ export function SettingsDialog({ settings, open, onClose, onSave }: Props) {
       prompt: ''
     }
     patch({
-      promptPresets: [...draft.promptPresets, preset],
+      promptPresets: [...settings.promptPresets, preset],
       activePromptPresetId: preset.id
     })
   }
 
   const removePreset = (id: string) => {
-    let next = draft.promptPresets.filter((p) => p.id !== id)
+    let next = settings.promptPresets.filter((p) => p.id !== id)
     if (next.length === 0) next = [createDefaultPromptPreset()]
     const activeId =
-      next.some((p) => p.id === draft.activePromptPresetId)
-        ? draft.activePromptPresetId
+      next.some((p) => p.id === settings.activePromptPresetId)
+        ? settings.activePromptPresetId
         : next[0].id
     patch({ promptPresets: next, activePromptPresetId: activeId })
   }
@@ -117,14 +135,14 @@ export function SettingsDialog({ settings, open, onClose, onSave }: Props) {
     setTestMsg(null)
     setTestErr(null)
     try {
-      const models = await listModels(draft)
+      const models = await listModels(settings)
       setModelList(models)
       setTestMsg(
         models.length > 0
           ? `Found ${models.length} model(s)`
           : 'Connected, but no models were listed'
       )
-      if (models.length > 0 && !draft.model) {
+      if (models.length > 0 && !settings.model) {
         patch({ model: models[0] })
       }
     } catch (err) {
@@ -139,7 +157,7 @@ export function SettingsDialog({ settings, open, onClose, onSave }: Props) {
     setTestMsg(null)
     setTestErr(null)
     try {
-      const msg = await testConnection(draft)
+      const msg = await testConnection(settings)
       setTestMsg(msg)
     } catch (err) {
       setTestErr(err instanceof Error ? err.message : String(err))
@@ -148,30 +166,7 @@ export function SettingsDialog({ settings, open, onClose, onSave }: Props) {
     }
   }
 
-  const handleSave = () => {
-    onSave({
-      provider: draft.provider,
-      lmStudioBaseUrl: draft.lmStudioBaseUrl,
-      ollamaBaseUrl: draft.ollamaBaseUrl,
-      model: draft.model,
-      promptPresets: draft.promptPresets,
-      activePromptPresetId: draft.activePromptPresetId,
-      uiGpuMode: draft.uiGpuMode,
-      disableUiGpu: draft.uiGpuMode === 'software',
-      downloadFolder: draft.downloadFolder,
-      pythonPath: draft.pythonPath,
-      sharedComfy: {
-        ...draft.sharedComfy,
-        comfyUiBatPath: draft.sharedComfy.comfyUiBatPath,
-        vaePath: draft.sharedComfy.vaePath,
-        clipPath: draft.sharedComfy.clipPath,
-        outputFolder: draft.sharedComfy.outputFolder
-      }
-    })
-    onClose()
-  }
-
-  const gd = draft.sharedComfy
+  const gd = settings.sharedComfy
 
   return (
     <div className="modal-backdrop" onClick={onClose} role="presentation">
@@ -182,7 +177,12 @@ export function SettingsDialog({ settings, open, onClose, onSave }: Props) {
         aria-modal="true"
         aria-labelledby="settings-title"
       >
-        <h2 id="settings-title">Settings</h2>
+        <div className="settings-modal-header">
+          <h2 id="settings-title">Settings</h2>
+          <button type="button" className="settings-modal-close" onClick={onClose}>
+            Close
+          </button>
+        </div>
 
         <div className="view-switch settings-tabs" role="tablist">
           <button
@@ -206,10 +206,21 @@ export function SettingsDialog({ settings, open, onClose, onSave }: Props) {
           <button
             type="button"
             role="tab"
+            className={`view-switch-seg${tab === 'wan22' ? ' active' : ''}`}
+            aria-selected={tab === 'wan22'}
+            onClick={() => setTab('wan22')}
+          >
+            {wan22Incomplete && <SetupDot />}
+            Wan2.2 model
+          </button>
+          <button
+            type="button"
+            role="tab"
             className={`view-switch-seg${tab === 'comfy' ? ' active' : ''}`}
             aria-selected={tab === 'comfy'}
             onClick={() => setTab('comfy')}
           >
+            {comfyIncomplete && <SetupDot />}
             ComfyUI
           </button>
           <button
@@ -219,6 +230,7 @@ export function SettingsDialog({ settings, open, onClose, onSave }: Props) {
             aria-selected={tab === 'ui'}
             onClick={() => setTab('ui')}
           >
+            {uiIncomplete && <SetupDot />}
             UI &amp; paths
           </button>
         </div>
@@ -229,7 +241,7 @@ export function SettingsDialog({ settings, open, onClose, onSave }: Props) {
               <label className="field">
                 <span>Provider</span>
                 <select
-                  value={draft.provider}
+                  value={settings.provider}
                   onChange={(e) =>
                     patch({
                       provider: e.target.value === 'ollama' ? 'ollama' : 'lmstudio'
@@ -241,12 +253,12 @@ export function SettingsDialog({ settings, open, onClose, onSave }: Props) {
                 </select>
               </label>
 
-              {draft.provider === 'lmstudio' ? (
+              {settings.provider === 'lmstudio' ? (
                 <label className="field">
                   <span>LM Studio base URL</span>
                   <input
                     type="text"
-                    value={draft.lmStudioBaseUrl}
+                    value={settings.lmStudioBaseUrl}
                     onChange={(e) => patch({ lmStudioBaseUrl: e.target.value })}
                     spellCheck={false}
                   />
@@ -256,7 +268,7 @@ export function SettingsDialog({ settings, open, onClose, onSave }: Props) {
                   <span>Ollama base URL</span>
                   <input
                     type="text"
-                    value={draft.ollamaBaseUrl}
+                    value={settings.ollamaBaseUrl}
                     onChange={(e) => patch({ ollamaBaseUrl: e.target.value })}
                     spellCheck={false}
                   />
@@ -268,11 +280,11 @@ export function SettingsDialog({ settings, open, onClose, onSave }: Props) {
                 <div className="model-row">
                   {modelList.length > 0 ? (
                     <select
-                      value={draft.model}
+                      value={settings.model}
                       onChange={(e) => patch({ model: e.target.value })}
                     >
-                      {!modelList.includes(draft.model) && draft.model ? (
-                        <option value={draft.model}>{draft.model}</option>
+                      {!modelList.includes(settings.model) && settings.model ? (
+                        <option value={settings.model}>{settings.model}</option>
                       ) : null}
                       {modelList.map((m) => (
                         <option key={m} value={m}>
@@ -283,7 +295,7 @@ export function SettingsDialog({ settings, open, onClose, onSave }: Props) {
                   ) : (
                     <input
                       type="text"
-                      value={draft.model}
+                      value={settings.model}
                       onChange={(e) => patch({ model: e.target.value })}
                       placeholder="vision / chat model name"
                       spellCheck={false}
@@ -306,10 +318,10 @@ export function SettingsDialog({ settings, open, onClose, onSave }: Props) {
                 <span>Active preset</span>
                 <div className="model-row">
                   <select
-                    value={draft.activePromptPresetId}
+                    value={settings.activePromptPresetId}
                     onChange={(e) => patch({ activePromptPresetId: e.target.value })}
                   >
-                    {draft.promptPresets.map((p) => (
+                    {settings.promptPresets.map((p) => (
                       <option key={p.id} value={p.id}>
                         {p.name}
                       </option>
@@ -321,7 +333,7 @@ export function SettingsDialog({ settings, open, onClose, onSave }: Props) {
                   <button
                     type="button"
                     className="danger"
-                    disabled={draft.promptPresets.length <= 1}
+                    disabled={settings.promptPresets.length <= 1}
                     onClick={() => activePreset && removePreset(activePreset.id)}
                   >
                     Remove
@@ -356,17 +368,16 @@ export function SettingsDialog({ settings, open, onClose, onSave }: Props) {
             </>
           )}
 
-          {tab === 'comfy' && (
+          {tab === 'wan22' && (
             <>
-              <ComfyUiBatField
-                value={gd.comfyUiBatPath}
-                onChange={(comfyUiBatPath) => patchSharedComfy({ comfyUiBatPath })}
-                downloadFolder={draft.downloadFolder}
-                pythonPath={draft.pythonPath}
-              />
-
               <label className="field">
-                <span>DiT model folder</span>
+                <span>
+                  {isSetupItemIncomplete(setupDraft, 'ditModelFolder') && <SetupDot />}
+                  DiT model folder
+                  <FieldHintIcon title="DiT model folder">
+                    I2V / FLF2V / LOOP High and Low DiT dropdowns list models from this folder.
+                  </FieldHintIcon>
+                </span>
                 <div className="field-row">
                   <input
                     type="text"
@@ -386,13 +397,16 @@ export function SettingsDialog({ settings, open, onClose, onSave }: Props) {
                     Browse
                   </button>
                 </div>
-                <p className="field-hint">
-                  I2V / FLF2V / LOOP High and Low DiT dropdowns list models from this folder.
-                </p>
               </label>
 
               <label className="field">
-                <span>Speed LoRA folder</span>
+                <span>
+                  {isSetupItemIncomplete(setupDraft, 'speedLoraFolder') && <SetupDot />}
+                  Speed LoRA folder
+                  <FieldHintIcon title="Speed LoRA folder">
+                    Generate panels pick Speed LoRA (high / low) from this folder.
+                  </FieldHintIcon>
+                </span>
                 <div className="field-row">
                   <input
                     type="text"
@@ -412,13 +426,16 @@ export function SettingsDialog({ settings, open, onClose, onSave }: Props) {
                     Browse
                   </button>
                 </div>
-                <p className="field-hint">
-                  Generate panels pick Speed LoRA (high / low) from this folder.
-                </p>
               </label>
 
               <label className="field">
-                <span>Wan22 LoRA folder</span>
+                <span>
+                  {isSetupItemIncomplete(setupDraft, 'wan22LoraFolder') && <SetupDot />}
+                  Wan22 LoRA folder
+                  <FieldHintIcon title="Wan22 LoRA folder">
+                    Extra LoRAs on the generate panels are chosen from this folder.
+                  </FieldHintIcon>
+                </span>
                 <div className="field-row">
                   <input
                     type="text"
@@ -438,13 +455,16 @@ export function SettingsDialog({ settings, open, onClose, onSave }: Props) {
                     Browse
                   </button>
                 </div>
-                <p className="field-hint">
-                  Extra LoRAs on the generate panels are chosen from this folder.
-                </p>
               </label>
 
               <label className="field">
-                <span>Upscale model folder</span>
+                <span>
+                  {isSetupItemIncomplete(setupDraft, 'upscaleModelFolder') && <SetupDot />}
+                  Upscale model folder
+                  <FieldHintIcon title="Upscale model folder">
+                    Upscale page model dropdown lists files from this folder.
+                  </FieldHintIcon>
+                </span>
                 <div className="field-row">
                   <input
                     type="text"
@@ -464,13 +484,16 @@ export function SettingsDialog({ settings, open, onClose, onSave }: Props) {
                     Browse
                   </button>
                 </div>
-                <p className="field-hint">
-                  Upscale page model dropdown lists files from this folder.
-                </p>
               </label>
 
               <label className="field">
-                <span>Frame Interpolation model folder</span>
+                <span>
+                  {isSetupItemIncomplete(setupDraft, 'frameInterpModelFolder') && <SetupDot />}
+                  Frame Interpolation model folder
+                  <FieldHintIcon title="Frame Interpolation model folder">
+                    Upscale page Interpolation model dropdown lists files from this folder.
+                  </FieldHintIcon>
+                </span>
                 <div className="field-row">
                   <input
                     type="text"
@@ -490,13 +513,13 @@ export function SettingsDialog({ settings, open, onClose, onSave }: Props) {
                     Browse
                   </button>
                 </div>
-                <p className="field-hint">
-                  Upscale page Interpolation model dropdown lists files from this folder.
-                </p>
               </label>
 
               <label className="field">
-                <span>VAE</span>
+                <span>
+                  {isSetupItemIncomplete(setupDraft, 'vaePath') && <SetupDot />}
+                  VAE
+                </span>
                 <div className="field-row">
                   <input
                     type="text"
@@ -519,7 +542,10 @@ export function SettingsDialog({ settings, open, onClose, onSave }: Props) {
               </label>
 
               <label className="field">
-                <span>CLIP / UMT5</span>
+                <span>
+                  {isSetupItemIncomplete(setupDraft, 'clipPath') && <SetupDot />}
+                  CLIP / UMT5
+                </span>
                 <div className="field-row">
                   <input
                     type="text"
@@ -540,9 +566,28 @@ export function SettingsDialog({ settings, open, onClose, onSave }: Props) {
                   </button>
                 </div>
               </label>
+            </>
+          )}
+
+          {tab === 'comfy' && (
+            <>
+              <ComfyUiBatField
+                value={gd.comfyUiBatPath}
+                onChange={(comfyUiBatPath) => patchSharedComfy({ comfyUiBatPath })}
+                downloadFolder={settings.downloadFolder}
+                pythonPath={settings.pythonPath}
+                enabled={open}
+                showRequiredDot={isSetupItemIncomplete(setupDraft, 'comfyUiBatPath')}
+              />
 
               <label className="field">
-                <span>Output folder</span>
+                <span>
+                  Output folder
+                  <FieldHintIcon title="Output folder">
+                    Finished Wan2.2 videos are copied here and shown in the I2V / FLF2V / LOOP
+                    gallery.
+                  </FieldHintIcon>
+                </span>
                 <div className="field-row">
                   <input
                     type="text"
@@ -562,9 +607,6 @@ export function SettingsDialog({ settings, open, onClose, onSave }: Props) {
                     Browse
                   </button>
                 </div>
-                <p className="field-hint">
-                  Finished Wan2.2 videos are copied here and shown in the I2V / FLF2V / LOOP gallery.
-                </p>
               </label>
 
               <div className="field-row-grid">
@@ -619,7 +661,12 @@ export function SettingsDialog({ settings, open, onClose, onSave }: Props) {
                   </select>
                 </label>
                 <label className="field">
-                  <span>Compression (CRF) · {gd.videoCrf}</span>
+                  <span>
+                    Compression (CRF) · {gd.videoCrf}
+                    <FieldHintIcon title="Compression (CRF)">
+                      Lower CRF = higher quality / larger file. Ignored for ProRes.
+                    </FieldHintIcon>
+                  </span>
                   <input
                     type="range"
                     min={VIDEO_CRF_MIN}
@@ -631,16 +678,18 @@ export function SettingsDialog({ settings, open, onClose, onSave }: Props) {
                   />
                 </label>
               </div>
-              <p className="field-hint">
-                Encoded directly by the NIN ComfyUI custom node (H264 / H265 / AV1 / VP9 / ProRes) —
-                not converted from H264. Lower CRF = higher quality / larger file. Ignored for ProRes.
-                Restart ComfyUI (Stop → Start) after updating the app so the custom node loads.
-              </p>
 
               <div
                 className={`generate-aspect-toggle lora-toggle${gd.useSageAttention ? ' is-on' : ''}`}
               >
-                <span className="lora-toggle-label">Use SageAttention</span>
+                <span className="lora-toggle-label">
+                  Use SageAttention
+                  <FieldHintIcon title="Use SageAttention">
+                    Starts ComfyUI with <code>--use-sage-attention</code> for faster sampling.
+                    Requires sageattention in the Python env (see UI tab). Changing this restarts
+                    ComfyUI on next Start / Generate.
+                  </FieldHintIcon>
+                </span>
                 <button
                   type="button"
                   className="lora-switch"
@@ -654,16 +703,19 @@ export function SettingsDialog({ settings, open, onClose, onSave }: Props) {
                   <span className="lora-switch-knob" />
                 </button>
               </div>
-              <p className="field-hint">
-                Starts ComfyUI with <code>--use-sage-attention</code> for faster sampling. Requires
-                sageattention in the Python env (see UI tab). Changing this restarts ComfyUI on next
-                Start / Generate.
-              </p>
 
               <div
                 className={`generate-aspect-toggle lora-toggle${gd.useColorMatch ? ' is-on' : ''}`}
               >
-                <span className="lora-toggle-label">Color Match</span>
+                <span className="lora-toggle-label">
+                  Color Match
+                  <FieldHintIcon title="Color Match">
+                    After VAE decode, match each frame&apos;s colors to the start image (Reinhard
+                    LAB). Reduces color shift between the source still and the generated video.
+                    Restart ComfyUI (Stop → Start) after updating the app so the Color Match custom
+                    node loads.
+                  </FieldHintIcon>
+                </span>
                 <button
                   type="button"
                   className="lora-switch"
@@ -675,20 +727,20 @@ export function SettingsDialog({ settings, open, onClose, onSave }: Props) {
                   <span className="lora-switch-knob" />
                 </button>
               </div>
-              <p className="field-hint">
-                After VAE decode, match each frame&apos;s colors to the start image (Reinhard LAB).
-                Reduces color shift between the source still and the generated video. Restart ComfyUI
-                (Stop → Start) after updating the app so the Color Match custom node loads.
-              </p>
             </>
           )}
 
           {tab === 'ui' && (
             <>
               <label className="field">
-                <span>UI GPU mode</span>
+                <span>
+                  UI GPU mode
+                  <FieldHintIcon title="UI GPU mode">
+                    Changing UI GPU mode requires restarting the app to take effect.
+                  </FieldHintIcon>
+                </span>
                 <select
-                  value={draft.uiGpuMode}
+                  value={settings.uiGpuMode}
                   onChange={(e) =>
                     patch({ uiGpuMode: e.target.value as UiGpuMode })
                   }
@@ -697,21 +749,19 @@ export function SettingsDialog({ settings, open, onClose, onSave }: Props) {
                   <option value="onboard">Force onboard / discrete</option>
                   <option value="software">Software (CPU) rendering</option>
                 </select>
-                <p className="field-hint">
-                  Changing UI GPU mode requires restarting the app to take effect.
-                </p>
               </label>
 
               <DownloadFolderField
-                value={draft.downloadFolder}
+                value={settings.downloadFolder}
                 onChange={(downloadFolder) => patch({ downloadFolder })}
               />
 
               <PythonExecutableField
-                value={draft.pythonPath}
+                value={settings.pythonPath}
                 onChange={(pythonPath) => patch({ pythonPath })}
-                downloadFolder={draft.downloadFolder}
+                downloadFolder={settings.downloadFolder}
                 enabled={open}
+                showRequiredDot={isSetupItemIncomplete(setupDraft, 'pythonPath')}
                 hint={
                   <>
                     Wan2.2 stack: <code>torch</code> + Windows <code>triton</code> +{' '}
@@ -726,16 +776,6 @@ export function SettingsDialog({ settings, open, onClose, onSave }: Props) {
 
         {testMsg ? <p className="test-ok">{testMsg}</p> : null}
         {testErr ? <p className="test-err">{testErr}</p> : null}
-
-        <div className="modal-actions">
-          <button type="button" onClick={onClose}>
-            Cancel
-          </button>
-          <span className="spacer" />
-          <button type="button" className="primary" onClick={handleSave}>
-            Save
-          </button>
-        </div>
       </div>
     </div>
   )

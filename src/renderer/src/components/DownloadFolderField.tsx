@@ -1,3 +1,5 @@
+import { FieldHintIcon } from './FieldHintIcon'
+
 interface Props {
   value: string
   onChange: (value: string) => void
@@ -18,7 +20,14 @@ export function DownloadFolderField({ value, onChange, disabled = false }: Props
 
   return (
     <label className="field">
-      <span>Download folder</span>
+      <span>
+        Download folder
+        <FieldHintIcon title="Download folder">
+          Shared by Python install and ComfyUI downloads. Uses <code>{'{folder}'}/python</code> and{' '}
+          <code>{'{folder}'}/models</code>. Empty defaults to{' '}
+          <code>AppData\Roaming\NIN I2V Maker</code>.
+        </FieldHintIcon>
+      </span>
       <div className="model-row">
         <input
           type="text"
@@ -35,11 +44,6 @@ export function DownloadFolderField({ value, onChange, disabled = false }: Props
           Default
         </button>
       </div>
-      <p className="field-hint">
-        Shared by Python install and ComfyUI downloads. Uses <code>{'{folder}'}/python</code> and{' '}
-        <code>{'{folder}'}/models</code>. Empty defaults to{' '}
-        <code>AppData\Roaming\NIN I2V Maker</code>.
-      </p>
     </label>
   )
 }

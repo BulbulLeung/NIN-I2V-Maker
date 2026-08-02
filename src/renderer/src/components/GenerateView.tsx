@@ -40,6 +40,12 @@ import {
   isResolutionPreset
 } from '../utils/wanResolution'
 import { splitModelsByHighLow } from '../utils/highLowModelSplit'
+import {
+  getIncompleteSetupItems,
+  type SetupIncompleteItem,
+  type SetupSettingsTab
+} from '../utils/setupCompleteness'
+import { SetupIncompleteDialog } from './SetupIncompleteDialog'
 
 type Panel = 'i2v' | 'flf2v' | 'loop'
 
@@ -60,6 +66,8 @@ interface Props {
   onSharedComfyChange: (shared: SharedComfyDraft) => void
   onDraftChange: (draft: I2vGenerateDraft | Flf2vGenerateDraft) => void
   onStatus: (msg: string, isError?: boolean, options?: { sticky?: boolean }) => void
+  /** Open Settings, optionally on a specific incomplete-setup tab. */
+  onOpenSettings?: (tab?: SetupSettingsTab | null) => void
   /** True while any generate panel is running a video job (blocks Local AI). */
   videoGenerating?: boolean
   onVideoGeneratingChange?: (generating: boolean) => void
@@ -154,6 +162,7 @@ export function GenerateView({
   onSharedComfyChange,
   onDraftChange,
   onStatus,
+  onOpenSettings,
   videoGenerating = false,
   onVideoGeneratingChange
 }: Props) {
@@ -179,6 +188,9 @@ export function GenerateView({
   const [loraPopupOpen, setLoraPopupOpen] = useState(false)
   const [imagePicker, setImagePicker] = useState<null | 'start' | 'end'>(null)
   const [confirmDeleteVideo, setConfirmDeleteVideo] = useState(false)
+  const [setupIncompleteItems, setSetupIncompleteItems] = useState<SetupIncompleteItem[] | null>(
+    null
+  )
 
   const abortRef = useRef<AbortController | null>(null)
   const galleryRef = useRef<HTMLDivElement | null>(null)
@@ -222,7 +234,9 @@ export function GenerateView({
   )
 
   const ignoreWhenOtherModal = useCallback((e: KeyboardEvent) => {
-    if (document.querySelector('.settings-modal, .confirm-modal')) return true
+    if (document.querySelector('.settings-modal, .confirm-modal, .setup-incomplete-modal')) {
+      return true
+    }
     const t = e.target
     if (t instanceof Element && t.closest('.lora-popup-modal')) return true
     return false
@@ -230,7 +244,12 @@ export function GenerateView({
 
   useArrowListNav({
     enabled:
-      active && !imagePicker && !loraPopupOpen && !confirmDeleteVideo && videoPaths.length > 0,
+      active &&
+      !imagePicker &&
+      !loraPopupOpen &&
+      !confirmDeleteVideo &&
+      !setupIncompleteItems &&
+      videoPaths.length > 0,
     items: videoPaths,
     selectedId: selectedVideo,
     onSelect: selectGalleryVideo,
@@ -262,7 +281,13 @@ export function GenerateView({
       if (e.altKey || e.ctrlKey || e.metaKey) return
       if (isTextEntryTarget(e.target)) return
       if (imagePicker || loraPopupOpen) return
-      if (document.querySelector('.settings-modal, .confirm-modal, .lora-popup-modal')) return
+      if (
+        document.querySelector(
+          '.settings-modal, .confirm-modal, .lora-popup-modal, .setup-incomplete-modal'
+        )
+      ) {
+        return
+      }
       if (!selectedVideoRef.current) return
       e.preventDefault()
       e.stopPropagation()
@@ -609,6 +634,13 @@ export function GenerateView({
       onStatus('Another video generation is already running', true)
       return
     }
+
+    const incomplete = getIncompleteSetupItems(settings)
+    if (incomplete.length > 0) {
+      setSetupIncompleteItems(incomplete)
+      return
+    }
+
     const d = draftRef.current
     const s = sharedRef.current
     const flf = isFlfDraft(d) ? d : null
@@ -1572,6 +1604,17 @@ export function GenerateView({
         }
         onCancel={() => setConfirmDeleteVideo(false)}
         onConfirm={() => void performDeleteVideo()}
+      />
+
+      <SetupIncompleteDialog
+        open={Boolean(setupIncompleteItems?.length)}
+        items={setupIncompleteItems ?? []}
+        onClose={() => setSetupIncompleteItems(null)}
+        onOpenSettings={() => {
+          const tab = setupIncompleteItems?.[0]?.tab ?? null
+          setSetupIncompleteItems(null)
+          onOpenSettings?.(tab)
+        }}
       />
 
       {imagePicker ? (

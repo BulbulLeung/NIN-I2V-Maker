@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState, type ReactNode } from 'react'
 import { pythonInstallPathFromDownloadFolder } from '../types'
+import { FieldHintIcon } from './FieldHintIcon'
 
 interface Props {
   value: string
@@ -10,6 +11,7 @@ interface Props {
   enabled?: boolean
   /** Optional hint under the field. */
   hint?: ReactNode
+  showRequiredDot?: boolean
 }
 
 const DEFAULT_HINT: ReactNode = (
@@ -27,7 +29,8 @@ export function PythonExecutableField({
   onChange,
   downloadFolder,
   enabled = true,
-  hint = DEFAULT_HINT
+  hint = DEFAULT_HINT,
+  showRequiredDot = false
 }: Props) {
   const [probeStatus, setProbeStatus] = useState<ProbeStatus>('checking')
   const [probeMsg, setProbeMsg] = useState<string | null>(null)
@@ -132,7 +135,15 @@ export function PythonExecutableField({
   return (
     <div className="python-executable-field">
       <label className="field">
-        <span>Python executable</span>
+        <span>
+          {showRequiredDot && (
+            <span className="setup-required-dot" aria-hidden="true" />
+          )}
+          Python executable
+          {hint != null && (
+            <FieldHintIcon title="Python executable">{hint}</FieldHintIcon>
+          )}
+        </span>
         <div className="model-row">
           <input
             type="text"
@@ -179,8 +190,6 @@ export function PythonExecutableField({
           )}
         </div>
       </div>
-
-      {hint != null && <p className="field-hint">{hint}</p>}
     </div>
   )
 }

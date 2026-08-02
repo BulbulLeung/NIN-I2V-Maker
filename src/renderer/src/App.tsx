@@ -13,11 +13,16 @@ import {
 } from './types'
 import { createDefaultPromptPreset } from './defaults/i2vPromptPresets'
 import { parseSidecarCaption } from './utils/sidecarCaption'
-import { SettingsDialog } from './components/SettingsDialog'
+import { SettingsDialog, type SettingsTab } from './components/SettingsDialog'
 import { PromptView } from './components/PromptView'
 import { GenerateView } from './components/GenerateView'
 import { UpscaleView } from './components/UpscaleView'
 import { setLocalAiBlocked } from './services/localAiGate'
+import {
+  firstIncompleteTab,
+  hasIncompleteSetup,
+  type SetupSettingsTab
+} from './utils/setupCompleteness'
 
 interface StatusState {
   message: string
@@ -35,6 +40,7 @@ export function App() {
   const [settings, setSettingsState] = useState<AppSettings>(DEFAULT_SETTINGS)
   const [ready, setReady] = useState(false)
   const [settingsOpen, setSettingsOpen] = useState(false)
+  const [settingsInitialTab, setSettingsInitialTab] = useState<SettingsTab | null>(null)
   const [folderMenuOpen, setFolderMenuOpen] = useState(false)
   const [videoGenerating, setVideoGenerating] = useState(false)
   const [promptImages, setPromptImages] = useState<ImageItem[]>([])
@@ -149,6 +155,11 @@ export function App() {
       onStatus('Add a folder from the toolbar to load images', true)
     }
   }
+
+  const openSettings = useCallback((tab?: SetupSettingsTab | null) => {
+    setSettingsInitialTab(tab ?? firstIncompleteTab(settingsRef.current) ?? null)
+    setSettingsOpen(true)
+  }, [])
 
   useEffect(() => {
     if (!folderMenuOpen) return
@@ -374,7 +385,16 @@ export function App() {
           </div>
         </div>
         <div className="toolbar-right">
-          <button type="button" onClick={() => setSettingsOpen(true)}>
+          <button
+            type="button"
+            onClick={() => {
+              setSettingsInitialTab(null)
+              setSettingsOpen(true)
+            }}
+          >
+            {hasIncompleteSetup(settings) && (
+              <span className="setup-required-dot" aria-hidden="true" />
+            )}
             Settings
           </button>
         </div>
@@ -414,6 +434,7 @@ export function App() {
           onSharedComfyChange={onSharedComfyChange}
           onDraftChange={(d) => onI2vDraftChange(d as I2vGenerateDraft)}
           onStatus={onStatus}
+          onOpenSettings={openSettings}
           videoGenerating={videoGenerating}
           onVideoGeneratingChange={onVideoGeneratingChange}
         />
@@ -437,6 +458,7 @@ export function App() {
           onSharedComfyChange={onSharedComfyChange}
           onDraftChange={(d) => onFlf2vDraftChange(d as Flf2vGenerateDraft)}
           onStatus={onStatus}
+          onOpenSettings={openSettings}
           videoGenerating={videoGenerating}
           onVideoGeneratingChange={onVideoGeneratingChange}
         />
@@ -460,6 +482,7 @@ export function App() {
           onSharedComfyChange={onSharedComfyChange}
           onDraftChange={(d) => onLoopDraftChange(d as LoopGenerateDraft)}
           onStatus={onStatus}
+          onOpenSettings={openSettings}
           videoGenerating={videoGenerating}
           onVideoGeneratingChange={onVideoGeneratingChange}
         />
@@ -486,7 +509,11 @@ export function App() {
       <SettingsDialog
         settings={settings}
         open={settingsOpen}
-        onClose={() => setSettingsOpen(false)}
+        initialTab={settingsInitialTab}
+        onClose={() => {
+          setSettingsOpen(false)
+          setSettingsInitialTab(null)
+        }}
         onSave={persistSettings}
       />
 

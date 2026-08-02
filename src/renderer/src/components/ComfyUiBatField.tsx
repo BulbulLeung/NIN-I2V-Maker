@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from 'react'
+import { FieldHintIcon } from './FieldHintIcon'
 
 interface Props {
   value: string
@@ -6,6 +7,7 @@ interface Props {
   downloadFolder: string
   pythonPath: string
   enabled?: boolean
+  showRequiredDot?: boolean
 }
 
 export function ComfyUiBatField({
@@ -13,7 +15,8 @@ export function ComfyUiBatField({
   onChange,
   downloadFolder,
   pythonPath,
-  enabled = true
+  enabled = true,
+  showRequiredDot = false
 }: Props) {
   const [probeOk, setProbeOk] = useState<boolean | null>(null)
   const [probeMsg, setProbeMsg] = useState<string | null>(null)
@@ -115,7 +118,17 @@ export function ComfyUiBatField({
 
   return (
     <label className="field">
-      <span>ComfyUI launch bat</span>
+      <span>
+        {showRequiredDot && (
+          <span className="setup-required-dot" aria-hidden="true" />
+        )}
+        ComfyUI launch bat
+        <FieldHintIcon title="ComfyUI launch bat">
+          Download clones ComfyUI via git into <code>{'{downloadFolder}/ComfyUI'}</code>, installs
+          requirements with the Python above, and writes <code>run_i2vmaker.bat</code>. Requires
+          Git on PATH.
+        </FieldHintIcon>
+      </span>
       <div className="field-row">
         <input
           type="text"
@@ -144,13 +157,18 @@ export function ComfyUiBatField({
         </p>
       )}
       {!installing && probeMsg && (
-        <p className={`field-hint${probeOk === false ? ' field-hint-warn' : ''}`}>{probeMsg}</p>
+        <p
+          className={
+            probeOk === true
+              ? 'test-ok'
+              : probeOk === false
+                ? 'field-hint field-hint-warn'
+                : 'field-hint'
+          }
+        >
+          {probeMsg}
+        </p>
       )}
-      <p className="field-hint">
-        Download clones ComfyUI via git into{' '}
-        <code>{'{downloadFolder}/ComfyUI'}</code>, installs requirements with the Python above,
-        and writes <code>run_i2vmaker.bat</code>. Requires Git on PATH.
-      </p>
     </label>
   )
 }
