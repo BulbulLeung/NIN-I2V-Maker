@@ -4142,26 +4142,6 @@ button.danger.kbd-focus {
   min-height: 0;
 }
 
-.upscale-view .generate-comfy-row {
-  display: flex;
-  align-items: center;
-  gap: 0.45rem;
-  margin-bottom: 0.85rem;
-  flex-wrap: wrap;
-}
-
-.upscale-view .comfy-status-dot {
-  width: 0.55rem;
-  height: 0.55rem;
-  border-radius: 50%;
-  background: var(--text-muted);
-  flex-shrink: 0;
-}
-
-.upscale-view .comfy-status-dot.online {
-  background: #3ecf8e;
-}
-
 .generate-image-picker-modal {
   display: flex;
   flex-direction: column;

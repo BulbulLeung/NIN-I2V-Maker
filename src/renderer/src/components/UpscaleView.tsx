@@ -508,25 +508,20 @@ export function UpscaleView({
         <aside className="generate-settings">
           <div className="generate-settings-scroll upscale-settings-scroll">
             <div className="generate-settings-col">
-              <div className="field-row generate-comfy-row">
-                <button
-                  type="button"
-                  disabled={comfyBusy || generating}
-                  onClick={() => void startComfy()}
-                >
-                  {comfyOnline ? 'Restart ComfyUI' : 'Start ComfyUI'}
-                </button>
-                <button
-                  type="button"
-                  disabled={comfyBusy || generating || !comfyOnline}
-                  onClick={() => void stopComfy()}
-                >
-                  Stop
-                </button>
-                <span
-                  className={`comfy-status-dot${comfyOnline ? ' online' : ''}`}
-                  title={comfyOnline ? 'Online' : 'Offline'}
-                />
+              <div className="lora-test-comfy-row">
+                <span className={`lora-test-comfy-dot${comfyOnline ? ' online' : ''}`} />
+                <span className="lora-test-comfy-label">
+                  ComfyUI {comfyOnline ? 'online' : 'offline'}
+                </span>
+                {comfyOnline ? (
+                  <button type="button" disabled={comfyBusy || generating} onClick={() => void stopComfy()}>
+                    Stop
+                  </button>
+                ) : (
+                  <button type="button" disabled={comfyBusy || generating} onClick={() => void startComfy()}>
+                    Start
+                  </button>
+                )}
               </div>
 
               <div className="field">

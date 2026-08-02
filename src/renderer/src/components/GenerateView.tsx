@@ -1080,12 +1080,15 @@ export function GenerateView({
                 <span className="lora-test-comfy-label">
                   ComfyUI {comfyOnline ? 'online' : 'offline'}
                 </span>
-                <button type="button" disabled={comfyBusy || generating} onClick={() => void startComfy()}>
-                  Start
-                </button>
-                <button type="button" disabled={comfyBusy || generating} onClick={() => void stopComfy()}>
-                  Stop
-                </button>
+                {comfyOnline ? (
+                  <button type="button" disabled={comfyBusy || generating} onClick={() => void stopComfy()}>
+                    Stop
+                  </button>
+                ) : (
+                  <button type="button" disabled={comfyBusy || generating} onClick={() => void startComfy()}>
+                    Start
+                  </button>
+                )}
               </div>
 
               {panel === 'flf2v' || panel === 'loop' ? (
@@ -1145,9 +1148,7 @@ export function GenerateView({
                   <p className="field-hint">Set Wan22 LoRA folder in Settings → ComfyUI.</p>
                 ) : (
                   <p className="field-hint">
-                    {extraLoraCount === 0
-                      ? 'No extra LoRAs — open the panel to add high / low LoRAs.'
-                      : `${extraLoraCount} active · High ${activeHigh} / Low ${activeLow}`}
+                    {`${extraLoraCount} active · High ${activeHigh} / Low ${activeLow}`}
                   </p>
                 )}
               </div>
