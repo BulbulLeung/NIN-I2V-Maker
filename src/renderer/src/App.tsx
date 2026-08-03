@@ -423,7 +423,7 @@ export function App() {
               aria-selected={settings.activeView === 'upscale'}
               onClick={() => setView('upscale')}
             >
-              UPSCALE
+              Upscale
             </button>
           </div>
         </div>
