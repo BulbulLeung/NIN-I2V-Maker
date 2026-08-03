@@ -445,9 +445,14 @@ export function UpscaleView({
       }
 
       report(`Save to gallery… → ${s.outputFolder.trim()}`)
+      const sourceName = basenamePath(videoPath)
+      const dot = sourceName.lastIndexOf('.')
+      const sourceStem = dot > 0 ? sourceName.slice(0, dot) : sourceName
+      const upscaleBase = /_upscale$/i.test(sourceStem) ? sourceStem : `${sourceStem}_upscale`
       const saved = await window.api.gallerySaveVideo({
         sourcePath: resolved.path,
-        outputFolder: s.outputFolder.trim()
+        outputFolder: s.outputFolder.trim(),
+        fileName: upscaleBase
       })
       if (!saved.ok || !saved.path) {
         throw new Error(saved.error || 'Failed to save video to gallery')

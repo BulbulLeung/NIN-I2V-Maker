@@ -1500,7 +1500,13 @@ app.whenReady().then(async () => {
     'gallery:saveVideo',
     async (
       _event,
-      opts: { sourcePath: string; outputFolder: string; fileName?: string; seed?: number }
+      opts: {
+        sourcePath: string
+        outputFolder: string
+        fileName?: string
+        namePrefix?: string
+        seed?: number
+      }
     ): Promise<{ ok: boolean; path?: string; dir?: string; error?: string }> => {
       const sourcePath = (opts?.sourcePath || '').trim()
       const outputFolder = (opts?.outputFolder || '').trim()
@@ -1521,10 +1527,15 @@ app.whenReady().then(async () => {
           typeof opts?.seed === 'number' && Number.isFinite(opts.seed)
             ? Math.floor(opts.seed)
             : null
-        const seedSuffix = seedNum != null ? `_seed${seedNum}` : ''
+        const prefixRaw = (opts?.namePrefix || '').trim()
+        const safePrefix = prefixRaw.replace(/[<>:"/\\|?*\x00-\x1f]+/g, '_').replace(/_+/g, '_')
+        const seedSuffix =
+          seedNum != null ? (safePrefix ? `_${seedNum}` : `_seed${seedNum}`) : ''
         const safeBase =
           (opts?.fileName || '').trim().replace(/[<>:"/\\|?*\x00-\x1f]+/g, '_') ||
-          `i2v_${stamp}${seedSuffix}`
+          (safePrefix
+            ? `${safePrefix}_${stamp}${seedSuffix}`
+            : `i2v_${stamp}${seedSuffix}`)
         const baseName = safeBase.toLowerCase().endsWith(ext.toLowerCase())
           ? safeBase
           : `${safeBase}${ext}`

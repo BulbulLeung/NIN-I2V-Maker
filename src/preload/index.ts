@@ -403,6 +403,8 @@ const api = {
     sourcePath: string
     outputFolder: string
     fileName?: string
+    /** Filename head for Video Gen: I2V / FLF2V / LOOP → `{prefix}_{date}_{seed}` */
+    namePrefix?: string
     seed?: number
   }): Promise<{ ok: boolean; path?: string; dir?: string; error?: string }> =>
     ipcRenderer.invoke('gallery:saveVideo', opts),

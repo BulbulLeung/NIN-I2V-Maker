@@ -697,9 +697,11 @@ export function GenerateView({
         }
 
         report(`${batchTag}Save to gallery… → ${s.outputFolder.trim()}`)
+        const namePrefix = panel === 'loop' ? 'LOOP' : panel === 'i2v' ? 'I2V' : 'FLF2V'
         const saved = await window.api.gallerySaveVideo({
           sourcePath: resolved.path,
           outputFolder: s.outputFolder.trim(),
+          namePrefix,
           seed: result.seed
         })
         if (!saved.ok || !saved.path) {
