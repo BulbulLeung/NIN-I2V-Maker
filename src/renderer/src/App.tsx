@@ -15,6 +15,7 @@ import {
 import { createDefaultPromptPresets } from './defaults/i2vPromptPresets'
 import { parseSidecarCaption } from './utils/sidecarCaption'
 import { SettingsDialog, type SettingsTab } from './components/SettingsDialog'
+import { ComfyUiProvider, ComfyUiToolbarControls } from './components/ComfyUiContext'
 import { PromptView } from './components/PromptView'
 import { SharedGenerateGalleryProvider } from './components/SharedGenerateGalleryContext'
 import { VideoGenView } from './components/VideoGenView'
@@ -332,6 +333,7 @@ export function App() {
   }
 
   return (
+    <ComfyUiProvider settings={settings} onStatus={onStatus}>
     <div className="app">
       <header className="toolbar">
         <div className="toolbar-left">
@@ -426,6 +428,7 @@ export function App() {
               Upscale
             </button>
           </div>
+          <ComfyUiToolbarControls locked={videoGenerating} />
         </div>
         <div className="toolbar-right">
           <button
@@ -595,5 +598,6 @@ export function App() {
         </span>
       </footer>
     </div>
+    </ComfyUiProvider>
   )
 }

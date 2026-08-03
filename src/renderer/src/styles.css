@@ -241,6 +241,19 @@ button.danger.kbd-focus {
   cursor: not-allowed;
 }
 
+.toolbar-comfy-row {
+  display: flex;
+  align-items: center;
+  gap: 0.45rem;
+  flex-shrink: 0;
+  margin-left: 0.15rem;
+}
+
+.toolbar-comfy-row .lora-test-comfy-label {
+  flex: 0 1 auto;
+  white-space: nowrap;
+}
+
 .toolbar button:focus:not(:focus-visible) {
   outline: none;
 }

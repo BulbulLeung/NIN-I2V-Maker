@@ -1,18 +1,17 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import type { AppSettings, SharedComfyDraft, UpscaleGenerateDraft } from '../types'
-import { modelsRootFromDownloadFolder } from '../types'
-import { basenamePath, parentDir } from '../services/comfyI2v'
+import { basenamePath } from '../services/comfyI2v'
 import {
   COMFY_BASE_URL,
   generateUpscaleWithComfy,
-  interruptComfyGeneration,
-  probeComfyOnline
+  interruptComfyGeneration
 } from '../services/comfyUpscale'
 import { unloadLocalAiModels } from '../services/unloadLocalAi'
 import { useArrowListNav } from '../hooks/useArrowListNav'
 import { useBackdropDismiss } from '../hooks/useBackdropDismiss'
 import { ResourceMonitorPane } from './ResourceMonitorPane'
 import { SearchableSelect } from './SearchableSelect'
+import { uniqueDirs, useComfyUi } from './ComfyUiContext'
 import {
   DEFAULT_RESOLUTION_PRESET,
   isResolutionPreset,
@@ -38,22 +37,6 @@ interface GalleryVideo {
   mtimeMs: number
 }
 
-function uniqueDirs(paths: string[], extraDirs: string[] = []): string[] {
-  const seen = new Set<string>()
-  const out: string[] = []
-  const addDir = (dir: string) => {
-    const trimmed = dir.trim()
-    if (!trimmed) return
-    const key = trimmed.replace(/\\/g, '/').toLowerCase()
-    if (seen.has(key)) return
-    seen.add(key)
-    out.push(trimmed)
-  }
-  for (const d of extraDirs) addDir(d)
-  for (const p of paths) addDir(parentDir(p))
-  return out
-}
-
 export function UpscaleView({
   active = true,
   settings,
@@ -65,12 +48,11 @@ export function UpscaleView({
   videoGenerating = false,
   onVideoGeneratingChange
 }: Props) {
+  const { comfyBusy, ensureComfyOnline } = useComfyUi()
   const [videos, setVideos] = useState<GalleryVideo[]>([])
   const [videoPickerOpen, setVideoPickerOpen] = useState(false)
   const [upscaleModels, setUpscaleModels] = useState<{ name: string; path: string }[]>([])
   const [interpModels, setInterpModels] = useState<{ name: string; path: string }[]>([])
-  const [comfyOnline, setComfyOnline] = useState(false)
-  const [comfyBusy, setComfyBusy] = useState(false)
   const [generating, setGenerating] = useState(false)
   const [generateElapsedSec, setGenerateElapsedSec] = useState(0)
   const [sourceFps, setSourceFps] = useState(16)
@@ -193,25 +175,6 @@ export function UpscaleView({
     }
   }, [sharedComfy.frameInterpModelFolder])
 
-  useEffect(() => {
-    if (!active || generating) return
-    let cancelled = false
-    const tick = async () => {
-      try {
-        const online = await probeComfyOnline()
-        if (!cancelled) setComfyOnline(online)
-      } catch {
-        if (!cancelled) setComfyOnline(false)
-      }
-    }
-    void tick()
-    const id = window.setInterval(() => void tick(), 4000)
-    return () => {
-      cancelled = true
-      window.clearInterval(id)
-    }
-  }, [active, generating])
-
   const videoPaths = useMemo(() => videos.map((v) => v.path), [videos])
 
   useArrowListNav({
@@ -236,77 +199,19 @@ export function UpscaleView({
     return () => window.removeEventListener('keydown', onKey)
   }, [active, videoPickerOpen])
 
-  const ensureComfyOnline = async (): Promise<boolean> => {
-    if (await probeComfyOnline()) {
-      setComfyOnline(true)
-      return true
-    }
-    const bat = sharedRef.current.comfyUiBatPath.trim()
-    if (!bat) {
-      onStatus('Set ComfyUI launch bat in Settings → ComfyUI', true)
-      return false
-    }
-    setComfyBusy(true)
-    onStatus('Starting ComfyUI…', false, { sticky: true })
-    try {
-      const s = sharedRef.current
-      const upscaleFolders = uniqueDirs(
-        [draftRef.current.upscaleModelPath],
-        [s.upscaleModelFolder]
-      )
-      const frameInterpFolders = uniqueDirs(
+  const ensureOnlineForUpscale = async (): Promise<boolean> => {
+    const s = sharedRef.current
+    return ensureComfyOnline({
+      ditFolders: uniqueDirs([s.highDitPath, s.lowDitPath], [s.ditModelFolder]),
+      vaeFolders: uniqueDirs([s.vaePath]),
+      clipFolders: uniqueDirs([s.clipPath]),
+      loraFolders: uniqueDirs([], [s.speedLoraFolder, s.wan22LoraFolder]),
+      upscaleFolders: uniqueDirs([draftRef.current.upscaleModelPath], [s.upscaleModelFolder]),
+      frameInterpFolders: uniqueDirs(
         [draftRef.current.interpolationModelPath],
         [s.frameInterpModelFolder]
       )
-      const result = await window.api.startComfyUi({
-        batPath: bat,
-        pythonPath: settings.pythonPath.trim() || undefined,
-        modelsRoot: modelsRootFromDownloadFolder(settings.downloadFolder),
-        ditFolders: uniqueDirs([s.highDitPath, s.lowDitPath], [s.ditModelFolder]),
-        vaeFolders: uniqueDirs([s.vaePath]),
-        clipFolders: uniqueDirs([s.clipPath]),
-        loraFolders: uniqueDirs([], [s.speedLoraFolder, s.wan22LoraFolder]),
-        upscaleFolders,
-        frameInterpFolders,
-        useSageAttention: s.useSageAttention
-      })
-      if (!result.ok) {
-        onStatus(result.error || 'Failed to start ComfyUI', true)
-        return false
-      }
-      for (let i = 0; i < 60; i++) {
-        if (await probeComfyOnline()) {
-          setComfyOnline(true)
-          onStatus(result.alreadyRunning ? 'ComfyUI already online' : 'ComfyUI is online')
-          return true
-        }
-        await new Promise((r) => setTimeout(r, 1000))
-      }
-      onStatus('ComfyUI started but did not become ready in time', true)
-      return false
-    } catch (err) {
-      onStatus(err instanceof Error ? err.message : String(err), true)
-      return false
-    } finally {
-      setComfyBusy(false)
-    }
-  }
-
-  const startComfy = async () => {
-    await ensureComfyOnline()
-  }
-
-  const stopComfy = async () => {
-    setComfyBusy(true)
-    try {
-      await window.api.stopComfyUi()
-      setComfyOnline(false)
-      onStatus('ComfyUI stopped')
-    } catch (err) {
-      onStatus(err instanceof Error ? err.message : String(err), true)
-    } finally {
-      setComfyBusy(false)
-    }
+    })
   }
 
   const abortUpscale = async () => {
@@ -348,7 +253,7 @@ export function UpscaleView({
     }
 
     report('Checking ComfyUI online (Upscale)…')
-    const online = await ensureComfyOnline()
+    const online = await ensureOnlineForUpscale()
     if (!online) return
 
     abortRef.current?.abort()
@@ -517,22 +422,6 @@ export function UpscaleView({
         <aside className="generate-settings">
           <div className="generate-settings-scroll upscale-settings-scroll">
             <div className="generate-settings-col">
-              <div className="lora-test-comfy-row">
-                <span className={`lora-test-comfy-dot${comfyOnline ? ' online' : ''}`} />
-                <span className="lora-test-comfy-label">
-                  ComfyUI {comfyOnline ? 'online' : 'offline'}
-                </span>
-                {comfyOnline ? (
-                  <button type="button" disabled={comfyBusy || generating} onClick={() => void stopComfy()}>
-                    Stop
-                  </button>
-                ) : (
-                  <button type="button" disabled={comfyBusy || generating} onClick={() => void startComfy()}>
-                    Start
-                  </button>
-                )}
-              </div>
-
               <div className="field">
                 <span>Video (Output folder)</span>
                 {!sharedComfy.outputFolder.trim() ? (

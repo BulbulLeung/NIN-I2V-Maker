@@ -14,20 +14,18 @@ import {
   framesFromSeconds,
   type VideoGenerateParams
 } from '../defaults/i2vGenerate'
-import { modelsRootFromDownloadFolder } from '../types'
 import {
   basenamePath,
   COMFY_BASE_URL,
   generateWan22LoopWithComfy,
-  interruptComfyGeneration,
-  probeComfyOnline
+  interruptComfyGeneration
 } from '../services/comfyWan22Loop'
-import { parentDir } from '../services/comfyI2v'
 import { useArrowListNav } from '../hooks/useArrowListNav'
 import { useBackdropDismiss } from '../hooks/useBackdropDismiss'
 import { unloadLocalAiModels } from '../services/unloadLocalAi'
 import { ExtraLoraDialog } from './ExtraLoraDialog'
 import { SearchableSelect } from './SearchableSelect'
+import { uniqueDirs, useComfyUi } from './ComfyUiContext'
 import {
   ASPECT_PRESET_OPTIONS,
   ASPECT_PRESETS,
@@ -94,22 +92,6 @@ const SCHEDULERS = [
   'beta'
 ] as const
 
-function uniqueDirs(paths: string[], extraDirs: string[] = []): string[] {
-  const seen = new Set<string>()
-  const out: string[] = []
-  const addDir = (dir: string) => {
-    const trimmed = dir.trim()
-    if (!trimmed) return
-    const key = trimmed.replace(/\\/g, '/').toLowerCase()
-    if (seen.has(key)) return
-    seen.add(key)
-    out.push(trimmed)
-  }
-  for (const d of extraDirs) addDir(d)
-  for (const p of paths) addDir(parentDir(p))
-  return out
-}
-
 function isFlfDraft(d: I2vGenerateDraft | Flf2vGenerateDraft): d is Flf2vGenerateDraft {
   return 'flfMode' in d
 }
@@ -132,8 +114,7 @@ export function GenerateView({
   videoGenerating = false,
   onVideoGeneratingChange
 }: Props) {
-  const [comfyOnline, setComfyOnline] = useState(false)
-  const [comfyBusy, setComfyBusy] = useState(false)
+  const { comfyBusy, ensureComfyOnline } = useComfyUi()
   const [generating, setGenerating] = useState(false)
   const [generateElapsedSec, setGenerateElapsedSec] = useState(0)
   const [batchProgress, setBatchProgress] = useState<{ current: number; total: number } | null>(
@@ -323,102 +304,24 @@ export function GenerateView({
     }
   }, [sharedComfy.wan22LoraFolder])
 
-  useEffect(() => {
-    if (!active && !generating) return
-    let cancelled = false
-    const tick = async () => {
-      try {
-        const online = await probeComfyOnline()
-        if (!cancelled) setComfyOnline(online)
-      } catch {
-        if (!cancelled) setComfyOnline(false)
-      }
-    }
-    void tick()
-    const id = window.setInterval(() => void tick(), 4000)
-    return () => {
-      cancelled = true
-      window.clearInterval(id)
-    }
-  }, [active, generating])
-
-  const ensureComfyOnline = async (): Promise<boolean> => {
-    if (await probeComfyOnline()) {
-      setComfyOnline(true)
-      return true
-    }
-    const bat = sharedRef.current.comfyUiBatPath.trim()
-    if (!bat) {
-      onStatus('Set ComfyUI launch bat in Settings → ComfyUI', true)
-      return false
-    }
-    setComfyBusy(true)
-    onStatus('Starting ComfyUI…', false, { sticky: true })
-    try {
-      const s = sharedRef.current
-      const d = draftRef.current
-      const ditFolders = uniqueDirs([s.highDitPath, s.lowDitPath], [s.ditModelFolder])
-      const vaeFolders = uniqueDirs([s.vaePath])
-      const clipFolders = uniqueDirs([s.clipPath])
-      const extraPaths = [
-        ...(d.extraLorasHigh || []).map((e) => e.path),
-        ...(d.extraLorasLow || []).map((e) => e.path)
-      ]
-      const loraFolders = uniqueDirs(
+  const ensureOnlineForGenerate = async (): Promise<boolean> => {
+    const s = sharedRef.current
+    const d = draftRef.current
+    const extraPaths = [
+      ...(d.extraLorasHigh || []).map((e) => e.path),
+      ...(d.extraLorasLow || []).map((e) => e.path)
+    ]
+    return ensureComfyOnline({
+      ditFolders: uniqueDirs([s.highDitPath, s.lowDitPath], [s.ditModelFolder]),
+      vaeFolders: uniqueDirs([s.vaePath]),
+      clipFolders: uniqueDirs([s.clipPath]),
+      loraFolders: uniqueDirs(
         [d.loraHighPath, d.loraLowPath, ...extraPaths],
         [s.speedLoraFolder, s.wan22LoraFolder]
-      )
-      const upscaleFolders = uniqueDirs([], [s.upscaleModelFolder])
-      const frameInterpFolders = uniqueDirs([], [s.frameInterpModelFolder])
-      const result = await window.api.startComfyUi({
-        batPath: bat,
-        pythonPath: settings.pythonPath.trim() || undefined,
-        modelsRoot: modelsRootFromDownloadFolder(settings.downloadFolder),
-        ditFolders,
-        vaeFolders,
-        clipFolders,
-        loraFolders,
-        upscaleFolders,
-        frameInterpFolders,
-        useSageAttention: s.useSageAttention
-      })
-      if (!result.ok) {
-        onStatus(result.error || 'Failed to start ComfyUI', true)
-        return false
-      }
-      for (let i = 0; i < 60; i++) {
-        if (await probeComfyOnline()) {
-          setComfyOnline(true)
-          onStatus(result.alreadyRunning ? 'ComfyUI already online' : 'ComfyUI is online')
-          return true
-        }
-        await new Promise((r) => setTimeout(r, 1000))
-      }
-      onStatus('ComfyUI started but did not become ready in time', true)
-      return false
-    } catch (err) {
-      onStatus(err instanceof Error ? err.message : String(err), true)
-      return false
-    } finally {
-      setComfyBusy(false)
-    }
-  }
-
-  const startComfy = async () => {
-    await ensureComfyOnline()
-  }
-
-  const stopComfy = async () => {
-    setComfyBusy(true)
-    try {
-      await window.api.stopComfyUi()
-      setComfyOnline(false)
-      onStatus('ComfyUI stopped')
-    } catch (err) {
-      onStatus(err instanceof Error ? err.message : String(err), true)
-    } finally {
-      setComfyBusy(false)
-    }
+      ),
+      upscaleFolders: uniqueDirs([], [s.upscaleModelFolder]),
+      frameInterpFolders: uniqueDirs([], [s.frameInterpModelFolder])
+    })
   }
 
   const abortGenerate = async () => {
@@ -528,7 +431,7 @@ export function GenerateView({
     }
 
     report(`Checking ComfyUI online (${modeLabel})…`)
-    const online = await ensureComfyOnline()
+    const online = await ensureOnlineForGenerate()
     if (!online) return
 
     abortRef.current?.abort()
@@ -946,22 +849,6 @@ export function GenerateView({
           </div>
           <div className="generate-settings-scroll">
             <div className="generate-settings-col generate-settings-col-left">
-              <div className="lora-test-comfy-row">
-                <span className={`lora-test-comfy-dot${comfyOnline ? ' online' : ''}`} />
-                <span className="lora-test-comfy-label">
-                  ComfyUI {comfyOnline ? 'online' : 'offline'}
-                </span>
-                {comfyOnline ? (
-                  <button type="button" disabled={comfyBusy || generating} onClick={() => void stopComfy()}>
-                    Stop
-                  </button>
-                ) : (
-                  <button type="button" disabled={comfyBusy || generating} onClick={() => void startComfy()}>
-                    Start
-                  </button>
-                )}
-              </div>
-
               {panel === 'flf2v' || panel === 'loop' ? (
                 <label className="field">
                   <span>Mode</span>
