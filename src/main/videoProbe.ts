@@ -1,6 +1,6 @@
 import { basename, extname } from 'path'
 import { open, stat } from 'fs/promises'
-import { parseSeedFromVideoName } from './videoGalleryMeta'
+import { readVideoUserMeta } from './videoMetaWrite'
 
 export interface VideoProbeInfo {
   path: string
@@ -12,6 +12,8 @@ export interface VideoProbeInfo {
   bitDepth: number | null
   container: string | null
   seed: number | null
+  /** User I2V prompt from container metadata (nin_prompt), if present. */
+  prompt: string | null
   /** Frames per second when detectable (MP4/MOV); null if unknown. */
   fps: number | null
   /** Total video sample/frame count when detectable (MP4/MOV stts); null if unknown. */
@@ -402,13 +404,17 @@ export async function probeVideoFile(filePath: string): Promise<VideoProbeInfo> 
     bitDepth: null,
     container: containerFromExt(ext),
     seed: null,
+    prompt: null,
     fps: null,
     frameCount: null
   }
 
   try {
-    info.seed = parseSeedFromVideoName(filePath)
+    const userMeta = await readVideoUserMeta(filePath)
+    info.prompt = userMeta.prompt
+    info.seed = userMeta.seed
   } catch {
+    info.prompt = null
     info.seed = null
   }
 

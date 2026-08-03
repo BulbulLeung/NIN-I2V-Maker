@@ -72,6 +72,7 @@ export function PromptView({
   selectedPathRef.current = selectedPath
   const imagesRef = useRef(images)
   imagesRef.current = images
+  const adoptingExternalPromptRef = useRef(false)
 
   const folder = settings.lastFolder
   const langLabel =
@@ -152,8 +153,19 @@ export function PromptView({
     setSelectedPath((prev) => (prev === external ? prev : external))
   }, [settings.promptImagePath])
 
-  // Only sync english when local path already matches App (path ownership = click handlers).
+  // Pull prompt text written by Video Gen (Auto AI prompt) into Prompt tab editor.
   useEffect(() => {
+    adoptingExternalPromptRef.current = true
+    setEnglish((prev) => (prev === settings.promptText ? prev : settings.promptText))
+    setEnglishSnapshot(settings.promptText)
+  }, [settings.promptText, setEnglishSnapshot])
+
+  // Push local editor edits to App.
+  useEffect(() => {
+    if (adoptingExternalPromptRef.current) {
+      adoptingExternalPromptRef.current = false
+      return
+    }
     const imagePath = selectedPath ?? ''
     if (!imagePath) return
     if (imagePath !== settings.promptImagePath) return

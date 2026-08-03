@@ -346,6 +346,24 @@ export function SettingsDialog({ settings, open, initialTab, onClose, onSave }: 
                   </button>
                 </div>
               </label>
+
+              <div
+                className={`generate-aspect-toggle lora-toggle${settings.unloadLlmOnGenerate ? ' is-on' : ''}`}
+              >
+                <span className="lora-toggle-label">Unload LLM model when start generate</span>
+                <button
+                  type="button"
+                  className="lora-switch"
+                  role="switch"
+                  aria-checked={settings.unloadLlmOnGenerate}
+                  aria-label="Unload LLM model when start generate"
+                  onClick={() =>
+                    patch({ unloadLlmOnGenerate: !settings.unloadLlmOnGenerate })
+                  }
+                >
+                  <span className="lora-switch-knob" />
+                </button>
+              </div>
             </>
           )}
 

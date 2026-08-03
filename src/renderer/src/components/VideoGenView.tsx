@@ -32,6 +32,7 @@ interface Props {
   onOpenSettings?: (tab?: SetupSettingsTab | null) => void
   videoGenerating?: boolean
   onVideoGeneratingChange?: (generating: boolean) => void
+  onPromptSourceChange?: (imagePath: string, promptText: string) => void
 }
 
 export function VideoGenView({
@@ -51,7 +52,8 @@ export function VideoGenView({
   onStatus,
   onOpenSettings,
   videoGenerating = false,
-  onVideoGeneratingChange
+  onVideoGeneratingChange,
+  onPromptSourceChange
 }: Props) {
   const [monitorDevice, setMonitorDevice] = useState('cuda:0')
 
@@ -80,6 +82,19 @@ export function VideoGenView({
     }
   }
 
+  const onUsePrompt = (prompt: string) => {
+    const text = prompt.trim()
+    if (!text) return
+    if (videoGenPanel === 'i2v') {
+      onI2vDraftChange({ ...settings.i2vDraft, prompt: text })
+    } else if (videoGenPanel === 'flf2v') {
+      onFlf2vDraftChange({ ...settings.flf2vDraft, prompt: text })
+    } else {
+      onLoopDraftChange({ ...settings.loopDraft, prompt: text })
+    }
+    onPromptSourceChange?.(startImagePath.trim() || settings.i2vDraft.selectedImagePath, text)
+  }
+
   return (
     <div className="generate-view">
       <div className="generate-body">
@@ -106,6 +121,7 @@ export function VideoGenView({
               onOpenSettings={onOpenSettings}
               videoGenerating={videoGenerating}
               onVideoGeneratingChange={onVideoGeneratingChange}
+              onPromptSourceChange={onPromptSourceChange}
             />
           </div>
           <div
@@ -130,6 +146,7 @@ export function VideoGenView({
               onOpenSettings={onOpenSettings}
               videoGenerating={videoGenerating}
               onVideoGeneratingChange={onVideoGeneratingChange}
+              onPromptSourceChange={onPromptSourceChange}
             />
           </div>
           <div
@@ -154,6 +171,7 @@ export function VideoGenView({
               onOpenSettings={onOpenSettings}
               videoGenerating={videoGenerating}
               onVideoGeneratingChange={onVideoGeneratingChange}
+              onPromptSourceChange={onPromptSourceChange}
             />
           </div>
         </div>
@@ -162,6 +180,7 @@ export function VideoGenView({
           active={active}
           outputFolder={sharedComfy.outputFolder}
           onUseSeed={onUseSeed}
+          onUsePrompt={onUsePrompt}
           onStatus={onStatus}
         />
 

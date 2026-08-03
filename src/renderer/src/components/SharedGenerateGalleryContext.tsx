@@ -25,6 +25,8 @@ export interface GalleryVideoMeta {
   bitDepth: number | null
   container: string | null
   seed: number | null
+  /** From container nin_prompt when present. */
+  prompt: string | null
 }
 
 interface SharedGenerateGalleryValue {
@@ -69,7 +71,11 @@ export function SharedGenerateGalleryProvider({
         return
       }
       const listed = res.videos.filter(
-        (v) => !/upscale/i.test(v.name) && !/_face/i.test(v.name)
+        (v) =>
+          !/upscale/i.test(v.name) &&
+          !/_face/i.test(v.name) &&
+          !/_merge/i.test(v.name) &&
+          !/^MERGE_/i.test(v.name)
       )
       setVideos(listed)
       setSelectedVideo((prev) =>
@@ -103,7 +109,8 @@ export function SharedGenerateGalleryProvider({
             codec: res.info.codec,
             bitDepth: res.info.bitDepth,
             container: res.info.container,
-            seed: res.info.seed ?? null
+            seed: res.info.seed ?? null,
+            prompt: res.info.prompt ?? null
           })
         } else {
           const fallback = videos.find((v) => v.path === selectedVideo)
@@ -117,7 +124,8 @@ export function SharedGenerateGalleryProvider({
                   codec: null,
                   bitDepth: null,
                   container: null,
-                  seed: null
+                  seed: null,
+                  prompt: null
                 }
               : null
           )

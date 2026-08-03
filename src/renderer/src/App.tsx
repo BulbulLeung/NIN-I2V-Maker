@@ -10,6 +10,7 @@ import {
   type LoopGenerateDraft,
   type SharedComfyDraft,
   type FaceDetailerDraft,
+  type MergeDraft,
   type UpscaleGenerateDraft,
   type VideoGenPanel
 } from './types'
@@ -22,6 +23,7 @@ import { SharedGenerateGalleryProvider } from './components/SharedGenerateGaller
 import { VideoGenView } from './components/VideoGenView'
 import { UpscaleView } from './components/UpscaleView'
 import { FaceDetailerView } from './components/FaceDetailerView'
+import { MergeView } from './components/MergeView'
 import { setLocalAiBlocked } from './services/localAiGate'
 import {
   firstIncompleteTab,
@@ -143,7 +145,10 @@ export function App() {
           : prev.upscaleDraft,
         faceDetailerDraft: partial.faceDetailerDraft
           ? { ...prev.faceDetailerDraft, ...partial.faceDetailerDraft }
-          : prev.faceDetailerDraft
+          : prev.faceDetailerDraft,
+        mergeDraft: partial.mergeDraft
+          ? { ...prev.mergeDraft, ...partial.mergeDraft }
+          : prev.mergeDraft
       })
       if (persistTimer.current) clearTimeout(persistTimer.current)
       persistTimer.current = setTimeout(() => {
@@ -313,6 +318,10 @@ export function App() {
     persistSettings({ faceDetailerDraft })
   }
 
+  const onMergeDraftChange = (mergeDraft: MergeDraft) => {
+    persistSettings({ mergeDraft })
+  }
+
   const onPromptSourceChange = useCallback(
     (imagePath: string, promptText: string) => {
       persistSettings({ promptImagePath: imagePath, promptText })
@@ -445,6 +454,15 @@ export function App() {
             >
               Face Detailer
             </button>
+            <button
+              type="button"
+              role="tab"
+              className={`view-switch-seg${settings.activeView === 'merge' ? ' active' : ''}`}
+              aria-selected={settings.activeView === 'merge'}
+              onClick={() => setView('merge')}
+            >
+              Merge
+            </button>
           </div>
           <ComfyUiToolbarControls locked={videoGenerating} />
         </div>
@@ -507,6 +525,7 @@ export function App() {
             onOpenSettings={openSettings}
             videoGenerating={videoGenerating}
             onVideoGeneratingChange={onVideoGeneratingChange}
+            onPromptSourceChange={onPromptSourceChange}
           />
         </div>
       </SharedGenerateGalleryProvider>
@@ -541,6 +560,23 @@ export function App() {
           draft={settings.faceDetailerDraft}
           onSharedComfyChange={onSharedComfyChange}
           onDraftChange={onFaceDetailerDraftChange}
+          onStatus={onStatus}
+          videoGenerating={videoGenerating}
+          onVideoGeneratingChange={onVideoGeneratingChange}
+        />
+      </div>
+
+      <div
+        className="app-view-slot"
+        style={{ display: settings.activeView === 'merge' ? undefined : 'none' }}
+        aria-hidden={settings.activeView !== 'merge'}
+      >
+        <MergeView
+          active={settings.activeView === 'merge'}
+          settings={settings}
+          sharedComfy={settings.sharedComfy}
+          draft={settings.mergeDraft}
+          onDraftChange={onMergeDraftChange}
           onStatus={onStatus}
           videoGenerating={videoGenerating}
           onVideoGeneratingChange={onVideoGeneratingChange}

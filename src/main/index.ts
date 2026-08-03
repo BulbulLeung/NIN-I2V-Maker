@@ -32,6 +32,8 @@ import {
 import { getResourceStats, killProcessByPid } from './resourceStats'
 import { probeVideoFile, type VideoProbeInfo } from './videoProbe'
 import { readImagePositivePrompt } from './imagePromptMeta'
+import { cancelActiveConcat, concatVideos } from './videoConcat'
+import { uniqueGalleryDest, writeVideoUserMeta } from './videoMetaWrite'
 
 const execFileAsync = promisify(execFile)
 
@@ -65,7 +67,7 @@ try {
 
 type TranslationProvider = 'lmstudio' | 'ollama'
 type UiGpuMode = 'auto' | 'software' | 'onboard'
-type ActiveView = 'prompt' | 'videoGen' | 'upscale' | 'faceDetailer'
+type ActiveView = 'prompt' | 'videoGen' | 'upscale' | 'faceDetailer' | 'merge'
 type VideoGenPanel = 'i2v' | 'flf2v' | 'loop'
 type FlfMode = 'flf2v' | 'wanfun_inpaint'
 
@@ -132,6 +134,7 @@ interface VideoGenerateParams {
   extraLorasLow: ExtraLoraEntry[]
   selectedImagePath: string
   prompt: string
+  autoAiPrompt: boolean
   motionAmplitude: number
   noiseStrength: number
 }
@@ -175,6 +178,10 @@ interface FaceDetailerDraft {
   shift: number
 }
 
+interface MergeDraft {
+  videoPaths: string[]
+}
+
 interface AppSettings {
   provider: TranslationProvider
   lmStudioBaseUrl: string
@@ -198,12 +205,14 @@ interface AppSettings {
   promptImagePath: string
   promptText: string
   useImagePrompt: boolean
+  unloadLlmOnGenerate: boolean
   sharedComfy: SharedComfyDraft
   i2vDraft: I2vGenerateDraft
   flf2vDraft: Flf2vGenerateDraft
   loopDraft: LoopGenerateDraft
   upscaleDraft: UpscaleGenerateDraft
   faceDetailerDraft: FaceDetailerDraft
+  mergeDraft: MergeDraft
   windowWidth: number
   windowHeight: number
   windowX: number | null
@@ -283,6 +292,7 @@ const DEFAULT_VIDEO_PARAMS: VideoGenerateParams = {
   extraLorasLow: [],
   selectedImagePath: '',
   prompt: '',
+  autoAiPrompt: false,
   motionAmplitude: 1.15,
   noiseStrength: 0
 }
@@ -332,6 +342,10 @@ const DEFAULT_FACE_DETAILER_DRAFT: FaceDetailerDraft = {
   shift: 8
 }
 
+const DEFAULT_MERGE_DRAFT: MergeDraft = {
+  videoPaths: ['']
+}
+
 const DEFAULT_SETTINGS: AppSettings = {
   provider: 'lmstudio',
   lmStudioBaseUrl: 'http://localhost:1234/v1',
@@ -355,12 +369,14 @@ const DEFAULT_SETTINGS: AppSettings = {
   promptImagePath: '',
   promptText: '',
   useImagePrompt: false,
+  unloadLlmOnGenerate: true,
   sharedComfy: { ...DEFAULT_SHARED_COMFY },
   i2vDraft: { ...DEFAULT_I2V_DRAFT },
   flf2vDraft: { ...DEFAULT_FLF2V_DRAFT },
   loopDraft: { ...DEFAULT_LOOP_DRAFT },
   upscaleDraft: { ...DEFAULT_UPSCALE_DRAFT },
   faceDetailerDraft: { ...DEFAULT_FACE_DETAILER_DRAFT },
+  mergeDraft: { ...DEFAULT_MERGE_DRAFT },
   windowWidth: DEFAULT_WINDOW.width,
   windowHeight: DEFAULT_WINDOW.height,
   windowX: null,
@@ -396,6 +412,7 @@ function normalizeActiveViewAndPanel(raw: unknown): {
   if (raw === 'videoGen') return { activeView: 'videoGen', videoGenPanel: null }
   if (raw === 'upscale') return { activeView: 'upscale', videoGenPanel: null }
   if (raw === 'faceDetailer') return { activeView: 'faceDetailer', videoGenPanel: null }
+  if (raw === 'merge') return { activeView: 'merge', videoGenPanel: null }
   return { activeView: 'prompt', videoGenPanel: null }
 }
 
@@ -561,6 +578,8 @@ function normalizeVideoParams(raw: unknown, defaults: VideoGenerateParams): Vide
     })(),
     selectedImagePath: strField(o.selectedImagePath),
     prompt: strField(o.prompt),
+    autoAiPrompt:
+      typeof o.autoAiPrompt === 'boolean' ? o.autoAiPrompt : defaults.autoAiPrompt,
     motionAmplitude: Math.min(2, Math.max(1, numField(o.motionAmplitude, defaults.motionAmplitude))),
     noiseStrength: Math.min(0.3, Math.max(0, numField(o.noiseStrength, defaults.noiseStrength)))
   }
@@ -649,6 +668,14 @@ function normalizeFaceDetailerDraft(raw: unknown): FaceDetailerDraft {
   }
 }
 
+function normalizeMergeDraft(raw: unknown): MergeDraft {
+  const o = raw && typeof raw === 'object' ? (raw as Record<string, unknown>) : {}
+  const paths = Array.isArray(o.videoPaths)
+    ? o.videoPaths.filter((p): p is string => typeof p === 'string').map((p) => p.trim())
+    : []
+  return { videoPaths: paths.length > 0 ? paths : [''] }
+}
+
 /** Migrate legacy generateDraft into sharedComfy + i2vDraft + flf2vDraft + loopDraft. */
 function migrateGenerateSettings(parsed: Record<string, unknown>): {
   sharedComfy: SharedComfyDraft
@@ -657,6 +684,7 @@ function migrateGenerateSettings(parsed: Record<string, unknown>): {
   loopDraft: LoopGenerateDraft
   upscaleDraft: UpscaleGenerateDraft
   faceDetailerDraft: FaceDetailerDraft
+  mergeDraft: MergeDraft
 } {
   const legacy = parsed.generateDraft
   const hasNew =
@@ -665,7 +693,8 @@ function migrateGenerateSettings(parsed: Record<string, unknown>): {
     parsed.flf2vDraft != null ||
     parsed.loopDraft != null ||
     parsed.upscaleDraft != null ||
-    parsed.faceDetailerDraft != null
+    parsed.faceDetailerDraft != null ||
+    parsed.mergeDraft != null
 
   if (hasNew) {
     const fromLegacy =
@@ -709,7 +738,8 @@ function migrateGenerateSettings(parsed: Record<string, unknown>): {
       flf2vDraft: normalizeFlf2vDraft(parsed.flf2vDraft ?? legacy),
       loopDraft: normalizeLoopDraft(parsed.loopDraft ?? parsed.flf2vDraft ?? legacy),
       upscaleDraft,
-      faceDetailerDraft
+      faceDetailerDraft,
+      mergeDraft: normalizeMergeDraft(parsed.mergeDraft)
     }
   }
 
@@ -720,7 +750,8 @@ function migrateGenerateSettings(parsed: Record<string, unknown>): {
       flf2vDraft: normalizeFlf2vDraft(legacy),
       loopDraft: normalizeLoopDraft(legacy),
       upscaleDraft: normalizeUpscaleDraft(parsed.upscaleDraft),
-      faceDetailerDraft: normalizeFaceDetailerDraft(parsed.faceDetailerDraft)
+      faceDetailerDraft: normalizeFaceDetailerDraft(parsed.faceDetailerDraft),
+      mergeDraft: normalizeMergeDraft(parsed.mergeDraft)
     }
   }
 
@@ -730,7 +761,8 @@ function migrateGenerateSettings(parsed: Record<string, unknown>): {
     flf2vDraft: { ...DEFAULT_FLF2V_DRAFT },
     loopDraft: { ...DEFAULT_LOOP_DRAFT },
     upscaleDraft: { ...DEFAULT_UPSCALE_DRAFT },
-    faceDetailerDraft: { ...DEFAULT_FACE_DETAILER_DRAFT }
+    faceDetailerDraft: { ...DEFAULT_FACE_DETAILER_DRAFT },
+    mergeDraft: { ...DEFAULT_MERGE_DRAFT }
   }
 }
 
@@ -790,12 +822,14 @@ async function loadSettings(): Promise<AppSettings> {
         typeof parsed.useImagePrompt === 'boolean'
           ? parsed.useImagePrompt
           : DEFAULT_SETTINGS.useImagePrompt,
+      unloadLlmOnGenerate: parsed.unloadLlmOnGenerate !== false,
       sharedComfy: migrated.sharedComfy,
       i2vDraft: migrated.i2vDraft,
       flf2vDraft: migrated.flf2vDraft,
       loopDraft: migrated.loopDraft,
       upscaleDraft: migrated.upscaleDraft,
-      faceDetailerDraft: migrated.faceDetailerDraft
+      faceDetailerDraft: migrated.faceDetailerDraft,
+      mergeDraft: migrated.mergeDraft
     }
   } catch {
     return {
@@ -805,7 +839,8 @@ async function loadSettings(): Promise<AppSettings> {
       flf2vDraft: { ...DEFAULT_FLF2V_DRAFT },
       loopDraft: { ...DEFAULT_LOOP_DRAFT },
       upscaleDraft: { ...DEFAULT_UPSCALE_DRAFT },
-      faceDetailerDraft: { ...DEFAULT_FACE_DETAILER_DRAFT }
+      faceDetailerDraft: { ...DEFAULT_FACE_DETAILER_DRAFT },
+      mergeDraft: { ...DEFAULT_MERGE_DRAFT }
     }
   }
 }
@@ -1148,6 +1183,25 @@ app.whenReady().then(async () => {
     }
   )
 
+  ipcMain.handle(
+    'dialog:openFiles',
+    async (
+      _event,
+      opts?: {
+        title?: string
+        filters?: { name: string; extensions: string[] }[]
+      }
+    ) => {
+      const result = await dialog.showOpenDialog(mainWindow!, {
+        title: opts?.title,
+        properties: ['openFile', 'multiSelections'],
+        filters: opts?.filters ?? [{ name: 'All Files', extensions: ['*'] }]
+      })
+      if (result.canceled || result.filePaths.length === 0) return []
+      return result.filePaths
+    }
+  )
+
   ipcMain.handle('shell:openPath', async (_event, targetPath: string) => {
     const raw = typeof targetPath === 'string' ? targetPath.trim() : ''
     if (!raw) return { ok: false, error: 'Path is empty' }
@@ -1319,6 +1373,10 @@ app.whenReady().then(async () => {
       faceDetailerDraft: {
         ...migrated.faceDetailerDraft,
         ...(settings.faceDetailerDraft || {})
+      },
+      mergeDraft: {
+        ...migrated.mergeDraft,
+        ...(settings.mergeDraft || {})
       },
       uiGpuMode,
       disableUiGpu: uiGpuMode === 'software',
@@ -1606,9 +1664,12 @@ app.whenReady().then(async () => {
         outputFolder: string
         fileName?: string
         namePrefix?: string
+        /** Stored in container metadata only (not in filename). */
         seed?: number
+        /** Stored in container metadata as nin_prompt. */
+        prompt?: string
       }
-    ): Promise<{ ok: boolean; path?: string; dir?: string; error?: string }> => {
+    ): Promise<{ ok: boolean; path?: string; dir?: string; error?: string; warning?: string }> => {
       const sourcePath = (opts?.sourcePath || '').trim()
       const outputFolder = (opts?.outputFolder || '').trim()
       if (!sourcePath) return { ok: false, error: 'Source path is empty' }
@@ -1630,27 +1691,33 @@ app.whenReady().then(async () => {
             : null
         const prefixRaw = (opts?.namePrefix || '').trim()
         const safePrefix = prefixRaw.replace(/[<>:"/\\|?*\x00-\x1f]+/g, '_').replace(/_+/g, '_')
-        const seedSuffix =
-          seedNum != null ? (safePrefix ? `_${seedNum}` : `_seed${seedNum}`) : ''
+        // Filename no longer embeds seed — seed goes to container metadata.
         const safeBase =
           (opts?.fileName || '').trim().replace(/[<>:"/\\|?*\x00-\x1f]+/g, '_') ||
-          (safePrefix
-            ? `${safePrefix}_${stamp}${seedSuffix}`
-            : `i2v_${stamp}${seedSuffix}`)
+          (safePrefix ? `${safePrefix}_${stamp}` : `i2v_${stamp}`)
         const baseName = safeBase.toLowerCase().endsWith(ext.toLowerCase())
           ? safeBase
           : `${safeBase}${ext}`
-        let dest = join(outputFolder, baseName)
-        if (existsSync(dest)) {
-          const stem = baseName.slice(0, -ext.length)
-          dest = join(outputFolder, `${stem}_${Date.now()}${ext}`)
-        }
+        const dest = uniqueGalleryDest(outputFolder, baseName, ext)
         try {
           await copyFile(sourcePath, dest)
         } catch {
           copyFileSync(sourcePath, dest)
         }
-        return { ok: true, path: dest, dir: outputFolder }
+
+        const promptText = typeof opts?.prompt === 'string' ? opts.prompt : ''
+        let warning: string | undefined
+        if (promptText.trim() || seedNum != null) {
+          const meta = await writeVideoUserMeta(dest, {
+            prompt: promptText,
+            seed: seedNum
+          })
+          if (!meta.ok) {
+            warning = meta.error || 'Failed to write video metadata'
+          }
+        }
+
+        return { ok: true, path: dest, dir: outputFolder, warning }
       } catch (err) {
         return { ok: false, error: err instanceof Error ? err.message : String(err) }
       }
@@ -1725,6 +1792,25 @@ app.whenReady().then(async () => {
       }
     }
   )
+
+  ipcMain.handle(
+    'gallery:concatVideos',
+    async (
+      _event,
+      opts: { paths: string[]; outputFolder: string; namePrefix?: string }
+    ): Promise<{
+      ok: boolean
+      path?: string
+      dir?: string
+      error?: string
+      mode?: 'copy' | 'reencode'
+    }> => concatVideos(opts || { paths: [], outputFolder: '' })
+  )
+
+  ipcMain.handle('gallery:cancelConcatVideos', async () => {
+    cancelActiveConcat()
+    return { ok: true }
+  })
 
   await createWindow()
 

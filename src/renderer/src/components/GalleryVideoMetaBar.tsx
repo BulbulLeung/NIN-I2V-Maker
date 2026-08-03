@@ -18,17 +18,21 @@ export function formatVideoMetaLine(meta: GalleryVideoMeta): string {
   } else if (meta.container) {
     parts.push(meta.container)
   }
+  if (meta.prompt?.trim()) parts.push('prompt')
   return parts.join(' · ')
 }
 
 interface Props {
   meta: GalleryVideoMeta
   onUseSeed?: (seed: number) => void
+  onUsePrompt?: (prompt: string) => void
   onStatus?: (msg: string, isError?: boolean) => void
 }
 
-export function GalleryVideoMetaBar({ meta, onUseSeed, onStatus }: Props) {
+export function GalleryVideoMetaBar({ meta, onUseSeed, onUsePrompt, onStatus }: Props) {
   const canUseSeed = Boolean(onUseSeed) && meta.seed != null
+  const promptText = (meta.prompt || '').trim()
+  const canUsePrompt = Boolean(onUsePrompt) && promptText.length > 0
   return (
     <div className="generate-video-meta">
       <button
@@ -40,7 +44,7 @@ export function GalleryVideoMetaBar({ meta, onUseSeed, onStatus }: Props) {
             ? onUseSeed
               ? `Copy seed ${meta.seed} into Seed field`
               : `Seed ${meta.seed}`
-            : 'No seed in filename'
+            : 'No seed in video metadata'
         }
         onClick={() => {
           if (!onUseSeed || meta.seed == null) return
@@ -50,11 +54,35 @@ export function GalleryVideoMetaBar({ meta, onUseSeed, onStatus }: Props) {
       >
         Use Seed
       </button>
+      {onUsePrompt ? (
+        <button
+          type="button"
+          className="generate-use-seed-btn"
+          disabled={!canUsePrompt}
+          title={
+            canUsePrompt
+              ? 'Copy prompt from video metadata into Prompt field'
+              : 'No prompt in video metadata'
+          }
+          onClick={() => {
+            if (!canUsePrompt) return
+            onUsePrompt(promptText)
+            onStatus?.('Prompt copied from video metadata')
+          }}
+        >
+          Use Prompt
+        </button>
+      ) : null}
       <div className="generate-video-meta-text">
         <div className="generate-video-meta-name" title={meta.name}>
           {meta.name}
         </div>
-        <div className="generate-video-meta-details">{formatVideoMetaLine(meta)}</div>
+        <div
+          className="generate-video-meta-details"
+          title={promptText || undefined}
+        >
+          {formatVideoMetaLine(meta)}
+        </div>
       </div>
     </div>
   )

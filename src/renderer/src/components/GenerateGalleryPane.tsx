@@ -12,6 +12,7 @@ interface Props {
   active?: boolean
   outputFolder: string
   onUseSeed: (seed: number) => void
+  onUsePrompt?: (prompt: string) => void
   onStatus: (msg: string, isError?: boolean, options?: { sticky?: boolean }) => void
 }
 
@@ -19,6 +20,7 @@ export function GenerateGalleryPane({
   active = true,
   outputFolder,
   onUseSeed,
+  onUsePrompt,
   onStatus
 }: Props) {
   const {
@@ -160,6 +162,7 @@ export function GenerateGalleryPane({
               <GalleryVideoMetaBar
                 meta={videoMeta}
                 onUseSeed={onUseSeed}
+                onUsePrompt={onUsePrompt}
                 onStatus={onStatus}
               />
             ) : null}

@@ -23,6 +23,8 @@ import {
 import { useArrowListNav } from '../hooks/useArrowListNav'
 import { useBackdropDismiss } from '../hooks/useBackdropDismiss'
 import { unloadLocalAiModels } from '../services/unloadLocalAi'
+import { generateI2vPromptForImage } from '../services/promptGen'
+import { parseSidecarCaption } from '../utils/sidecarCaption'
 import { ExtraLoraDialog } from './ExtraLoraDialog'
 import { SearchableSelect } from './SearchableSelect'
 import { uniqueDirs, useComfyUi } from './ComfyUiContext'
@@ -72,6 +74,8 @@ interface Props {
   /** True while any generate panel is running a video job (blocks Local AI). */
   videoGenerating?: boolean
   onVideoGeneratingChange?: (generating: boolean) => void
+  /** Write generated prompt back to Prompt tab / App settings. */
+  onPromptSourceChange?: (imagePath: string, promptText: string) => void
 }
 
 const SAMPLERS = [
@@ -112,7 +116,8 @@ export function GenerateView({
   onStatus,
   onOpenSettings,
   videoGenerating = false,
-  onVideoGeneratingChange
+  onVideoGeneratingChange,
+  onPromptSourceChange
 }: Props) {
   const { comfyBusy, ensureComfyOnline } = useComfyUi()
   const [generating, setGenerating] = useState(false)
@@ -359,9 +364,10 @@ export function GenerateView({
     const isLoop = panel === 'loop'
 
     const startPath = startImageRef.current.trim() || d.selectedImagePath.trim()
-    const prompt = d.prompt.trim() || promptTextRef.current.trim()
+    let prompt = d.prompt.trim() || promptTextRef.current.trim()
     const endPath = isLoop ? startPath : (flf?.endImagePath || '').trim()
     const batchTotal = Math.min(100, Math.max(1, Math.round(Number(d.batchCount) || 1)))
+    const autoAiPrompt = Boolean(d.autoAiPrompt)
 
     if (!startPath) {
       onStatus(
@@ -376,7 +382,7 @@ export function GenerateView({
       onStatus('Select an end frame image for FLF2V / WanFunInpaint', true)
       return
     }
-    if (!prompt) {
+    if (!autoAiPrompt && !prompt) {
       onStatus('Generate or enter a prompt in the Prompt tab first', true)
       return
     }
@@ -443,7 +449,6 @@ export function GenerateView({
     setGenerateElapsedSec(0)
     setBatchProgress({ current: 1, total: batchTotal })
     setGenerating(true)
-    onVideoGeneratingChange?.(true)
     const startedAt = Date.now()
 
     const formatElapsed = (ms: number) => {
@@ -459,26 +464,50 @@ export function GenerateView({
     }, 250)
 
     try {
-      report('Unloading Local AI models…')
-      try {
-        const unloaded = await unloadLocalAiModels(settings)
-        const parts: string[] = []
-        if (unloaded.ollamaUnloaded.length) {
-          parts.push(`Ollama: ${unloaded.ollamaUnloaded.join(', ')}`)
+      let motionNote = ''
+      let imagePositive: string | undefined
+      if (autoAiPrompt) {
+        try {
+          const caption = await window.api.readCaption(startPath)
+          motionNote = parseSidecarCaption(caption).motionNote
+        } catch {
+          motionNote = ''
         }
-        if (unloaded.lmStudioUnloaded.length) {
-          parts.push(`LM Studio: ${unloaded.lmStudioUnloaded.join(', ')}`)
+        if (settings.useImagePrompt) {
+          try {
+            const meta = await window.api.readImagePositivePrompt(startPath)
+            const positive = meta.positive?.trim()
+            if (positive) imagePositive = positive
+          } catch {
+            /* ignore — still generate without embedded prompt */
+          }
         }
-        for (const n of unloaded.notes) parts.push(n)
-        if (parts.length > 0) {
-          report(`Local AI unloaded — ${parts.join(' · ')}`)
-        } else {
-          report('Local AI: no loaded models (or servers offline)')
+      } else {
+        // Block Local AI for the whole video job when not auto-prompting each batch.
+        onVideoGeneratingChange?.(true)
+        if (settings.unloadLlmOnGenerate) {
+          report('Unloading Local AI models…')
+          try {
+            const unloaded = await unloadLocalAiModels(settings)
+            const parts: string[] = []
+            if (unloaded.ollamaUnloaded.length) {
+              parts.push(`Ollama: ${unloaded.ollamaUnloaded.join(', ')}`)
+            }
+            if (unloaded.lmStudioUnloaded.length) {
+              parts.push(`LM Studio: ${unloaded.lmStudioUnloaded.join(', ')}`)
+            }
+            for (const n of unloaded.notes) parts.push(n)
+            if (parts.length > 0) {
+              report(`Local AI unloaded — ${parts.join(' · ')}`)
+            } else {
+              report('Local AI: no loaded models (or servers offline)')
+            }
+          } catch (err) {
+            report(
+              `Local AI unload skipped: ${err instanceof Error ? err.message : String(err)}`
+            )
+          }
         }
-      } catch (err) {
-        report(
-          `Local AI unload skipped: ${err instanceof Error ? err.message : String(err)}`
-        )
       }
 
       report(
@@ -519,6 +548,51 @@ export function GenerateView({
         // First run uses draft seed; later runs always random (-1).
         const runSeed = batchIndex === 0 ? d.seed : -1
         const batchTag = batchTotal > 1 ? `[${batchIndex + 1}/${batchTotal}] ` : ''
+
+        if (autoAiPrompt) {
+          // Allow Local AI for this batch's prompt (video gate blocks it otherwise).
+          onVideoGeneratingChange?.(false)
+          report(`${batchTag}Generating AI prompt…`)
+          if (ac.signal.aborted) throw new Error('Generation cancelled')
+          const generated = await generateI2vPromptForImage(
+            settings,
+            startPath,
+            ac.signal,
+            motionNote || undefined,
+            imagePositive
+          )
+          if (ac.signal.aborted) throw new Error('Generation cancelled')
+          const nextPrompt = generated.trim()
+          if (!nextPrompt) {
+            throw new Error('AI prompt generation returned empty text')
+          }
+          prompt = nextPrompt
+          patchDraft({ prompt: nextPrompt })
+          onPromptSourceChange?.(startPath, nextPrompt)
+
+          onVideoGeneratingChange?.(true)
+          if (settings.unloadLlmOnGenerate) {
+            report(`${batchTag}Unloading Local AI models…`)
+            try {
+              const unloaded = await unloadLocalAiModels(settings)
+              const parts: string[] = []
+              if (unloaded.ollamaUnloaded.length) {
+                parts.push(`Ollama: ${unloaded.ollamaUnloaded.join(', ')}`)
+              }
+              if (unloaded.lmStudioUnloaded.length) {
+                parts.push(`LM Studio: ${unloaded.lmStudioUnloaded.join(', ')}`)
+              }
+              for (const n of unloaded.notes) parts.push(n)
+              if (parts.length > 0) {
+                report(`${batchTag}Local AI unloaded — ${parts.join(' · ')}`)
+              }
+            } catch (err) {
+              report(
+                `${batchTag}Local AI unload skipped: ${err instanceof Error ? err.message : String(err)}`
+              )
+            }
+          }
+        }
 
         report(
           `${batchTag}ComfyUI generate: seed ${runSeed < 0 ? 'random' : runSeed}, sampler ${d.sampler}/${d.scheduler}` +
@@ -611,10 +685,14 @@ export function GenerateView({
           sourcePath: resolved.path,
           outputFolder: s.outputFolder.trim(),
           namePrefix,
-          seed: result.seed
+          seed: result.seed,
+          prompt
         })
         if (!saved.ok || !saved.path) {
           throw new Error(saved.error || 'Failed to save video to gallery')
+        }
+        if (saved.warning) {
+          report(`${batchTag}Metadata warning: ${saved.warning}`)
         }
         lastSavedPath = saved.path
         await refreshGallery()
@@ -1179,6 +1257,23 @@ export function GenerateView({
                 </div>
               ) : null}
 
+              <div
+                className={`generate-aspect-toggle lora-toggle${draft.autoAiPrompt ? ' is-on' : ''}${generating ? ' is-disabled' : ''}`}
+              >
+                <span className="lora-toggle-label">Auto AI prompt</span>
+                <button
+                  type="button"
+                  className="lora-switch"
+                  role="switch"
+                  aria-checked={Boolean(draft.autoAiPrompt)}
+                  aria-label="Auto AI prompt"
+                  disabled={generating}
+                  onClick={() => patchDraft({ autoAiPrompt: !draft.autoAiPrompt })}
+                >
+                  <span className="lora-switch-knob" />
+                </button>
+              </div>
+
               <label className="field generate-settings-prompt-field">
                 <span>Prompt (from Prompt tab)</span>
                 <textarea
@@ -1188,7 +1283,11 @@ export function GenerateView({
                   spellCheck={false}
                   placeholder="Select an image and generate a prompt in the Prompt tab"
                 />
-                <p className="field-hint">Synced from Prompt; edits here apply to this generate only.</p>
+                <p className="field-hint">
+                  {draft.autoAiPrompt
+                    ? 'Auto AI prompt on: each Generate / batch run creates a new Prompt-tab AI prompt, then video.'
+                    : 'Synced from Prompt; edits here apply to this generate only.'}
+                </p>
               </label>
 
               <label className="field generate-settings-negative-field">

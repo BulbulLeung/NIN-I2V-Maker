@@ -9,6 +9,7 @@ import {
   DEFAULT_LOOP_GENERATE_DRAFT,
   DEFAULT_SHARED_COMFY,
   DEFAULT_FACE_DETAILER_DRAFT,
+  DEFAULT_MERGE_DRAFT,
   DEFAULT_UPSCALE_GENERATE_DRAFT,
   migrateGenerateSettings,
   normalizeActiveView,
@@ -26,6 +27,7 @@ import {
   type FlfMode,
   type I2vGenerateDraft,
   type LoopGenerateDraft,
+  type MergeDraft,
   type SharedComfyDraft,
   type UpscaleGenerateDraft,
   type ExtraLoraEntry,
@@ -45,6 +47,7 @@ export type {
   FlfMode,
   I2vGenerateDraft,
   LoopGenerateDraft,
+  MergeDraft,
   SharedComfyDraft,
   UpscaleGenerateDraft,
   VideoGenPanel,
@@ -169,12 +172,15 @@ export interface AppSettings {
   promptText: string
   /** When generating I2V prompt, include embedded image positive prompt from file metadata. */
   useImagePrompt: boolean
+  /** When true, unload Local AI (LLM) models from VRAM before starting generate. */
+  unloadLlmOnGenerate: boolean
   sharedComfy: SharedComfyDraft
   i2vDraft: I2vGenerateDraft
   flf2vDraft: Flf2vGenerateDraft
   loopDraft: LoopGenerateDraft
   upscaleDraft: UpscaleGenerateDraft
   faceDetailerDraft: FaceDetailerDraft
+  mergeDraft: MergeDraft
 }
 
 export const DEFAULT_SETTINGS: AppSettings = {
@@ -200,12 +206,14 @@ export const DEFAULT_SETTINGS: AppSettings = {
   promptImagePath: '',
   promptText: '',
   useImagePrompt: false,
+  unloadLlmOnGenerate: true,
   sharedComfy: { ...DEFAULT_SHARED_COMFY },
   i2vDraft: { ...DEFAULT_I2V_GENERATE_DRAFT },
   flf2vDraft: { ...DEFAULT_FLF2V_GENERATE_DRAFT },
   loopDraft: { ...DEFAULT_LOOP_GENERATE_DRAFT },
   upscaleDraft: { ...DEFAULT_UPSCALE_GENERATE_DRAFT },
-  faceDetailerDraft: { ...DEFAULT_FACE_DETAILER_DRAFT }
+  faceDetailerDraft: { ...DEFAULT_FACE_DETAILER_DRAFT },
+  mergeDraft: { ...DEFAULT_MERGE_DRAFT }
 }
 
 function normalizeUiGpuMode(raw: unknown): UiGpuMode {
@@ -290,12 +298,14 @@ export function normalizeSettings(
     promptImagePath: typeof r.promptImagePath === 'string' ? r.promptImagePath : '',
     promptText: typeof r.promptText === 'string' ? r.promptText : '',
     useImagePrompt: typeof r.useImagePrompt === 'boolean' ? r.useImagePrompt : false,
+    unloadLlmOnGenerate: r.unloadLlmOnGenerate !== false,
     sharedComfy: migrated.sharedComfy,
     i2vDraft: migrated.i2vDraft,
     flf2vDraft: migrated.flf2vDraft,
     loopDraft: migrated.loopDraft,
     upscaleDraft: migrated.upscaleDraft,
-    faceDetailerDraft: migrated.faceDetailerDraft
+    faceDetailerDraft: migrated.faceDetailerDraft,
+    mergeDraft: migrated.mergeDraft
   }
 }
 

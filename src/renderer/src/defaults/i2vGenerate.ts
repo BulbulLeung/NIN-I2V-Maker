@@ -4,7 +4,7 @@ import {
   isResolutionPreset
 } from '../utils/wanResolution'
 
-export type ActiveView = 'prompt' | 'videoGen' | 'upscale' | 'faceDetailer'
+export type ActiveView = 'prompt' | 'videoGen' | 'upscale' | 'faceDetailer' | 'merge'
 export type VideoGenPanel = 'i2v' | 'flf2v' | 'loop'
 export type FlfMode = 'flf2v' | 'wanfun_inpaint'
 export type Wan22VideoMode = 'i2v' | 'flf2v' | 'wanfun_inpaint'
@@ -89,6 +89,11 @@ export interface FaceDetailerDraft {
   seed: number
   /** ModelSamplingSD3 shift for Low DiT. */
   shift: number
+}
+
+/** Merge tab: ordered list of videos to concatenate. */
+export interface MergeDraft {
+  videoPaths: string[]
 }
 
 export type VideoSaveFormat = 'auto' | 'mp4' | 'webm' | 'mkv'
@@ -190,6 +195,8 @@ export interface VideoGenerateParams {
   extraLorasLow: ExtraLoraEntry[]
   selectedImagePath: string
   prompt: string
+  /** When true, Generate first runs Prompt-tab AI prompt gen, then video. */
+  autoAiPrompt: boolean
   /**
    * Latent motion amplify for NINI2VWanMotion* (1.0 = native-like).
    * Higher values restore dynamics lost at high resolution / Lightning.
@@ -272,6 +279,10 @@ export const DEFAULT_FACE_DETAILER_DRAFT: FaceDetailerDraft = {
   shift: 8
 }
 
+export const DEFAULT_MERGE_DRAFT: MergeDraft = {
+  videoPaths: ['']
+}
+
 export const DEFAULT_VIDEO_PARAMS: VideoGenerateParams = {
   negative: WAN_DEFAULT_NEGATIVE,
   steps: 8,
@@ -301,6 +312,7 @@ export const DEFAULT_VIDEO_PARAMS: VideoGenerateParams = {
   extraLorasLow: [],
   selectedImagePath: '',
   prompt: '',
+  autoAiPrompt: false,
   motionAmplitude: 1.15,
   noiseStrength: 0
 }
@@ -437,6 +449,7 @@ function normalizeVideoParams(
     })(),
     selectedImagePath: str(r.selectedImagePath),
     prompt: str(r.prompt),
+    autoAiPrompt: typeof r.autoAiPrompt === 'boolean' ? r.autoAiPrompt : defaults.autoAiPrompt,
     motionAmplitude: num(r.motionAmplitude, defaults.motionAmplitude, 1, 2),
     noiseStrength: num(r.noiseStrength, defaults.noiseStrength, 0, 0.3)
   }
@@ -543,6 +556,16 @@ export function normalizeFaceDetailerDraft(raw: unknown): FaceDetailerDraft {
   }
 }
 
+export function normalizeMergeDraft(raw: unknown): MergeDraft {
+  const r = (raw && typeof raw === 'object' ? raw : {}) as Record<string, unknown>
+  const paths = Array.isArray(r.videoPaths)
+    ? r.videoPaths
+        .filter((p): p is string => typeof p === 'string')
+        .map((p) => p.trim())
+    : []
+  return { videoPaths: paths.length > 0 ? paths : [''] }
+}
+
 export function normalizeI2vGenerateDraft(raw: unknown): I2vGenerateDraft {
   return normalizeVideoParams(raw, DEFAULT_I2V_GENERATE_DRAFT)
 }
@@ -572,6 +595,7 @@ export function migrateGenerateSettings(raw: Record<string, unknown>): {
   loopDraft: LoopGenerateDraft
   upscaleDraft: UpscaleGenerateDraft
   faceDetailerDraft: FaceDetailerDraft
+  mergeDraft: MergeDraft
 } {
   const legacy = raw.generateDraft
   const hasNew =
@@ -580,7 +604,8 @@ export function migrateGenerateSettings(raw: Record<string, unknown>): {
     raw.flf2vDraft != null ||
     raw.loopDraft != null ||
     raw.upscaleDraft != null ||
-    raw.faceDetailerDraft != null
+    raw.faceDetailerDraft != null ||
+    raw.mergeDraft != null
 
   if (hasNew) {
     const sharedFromLegacy =
@@ -629,7 +654,8 @@ export function migrateGenerateSettings(raw: Record<string, unknown>): {
       flf2vDraft: normalizeFlf2vGenerateDraft(raw.flf2vDraft ?? legacy),
       loopDraft: normalizeLoopGenerateDraft(raw.loopDraft ?? raw.flf2vDraft ?? legacy),
       upscaleDraft,
-      faceDetailerDraft
+      faceDetailerDraft,
+      mergeDraft: normalizeMergeDraft(raw.mergeDraft)
     }
   }
 
@@ -640,7 +666,8 @@ export function migrateGenerateSettings(raw: Record<string, unknown>): {
       flf2vDraft: normalizeFlf2vGenerateDraft(legacy),
       loopDraft: normalizeLoopGenerateDraft(legacy),
       upscaleDraft: normalizeUpscaleGenerateDraft(raw.upscaleDraft),
-      faceDetailerDraft: normalizeFaceDetailerDraft(raw.faceDetailerDraft)
+      faceDetailerDraft: normalizeFaceDetailerDraft(raw.faceDetailerDraft),
+      mergeDraft: normalizeMergeDraft(raw.mergeDraft)
     }
   }
 
@@ -650,7 +677,8 @@ export function migrateGenerateSettings(raw: Record<string, unknown>): {
     flf2vDraft: { ...DEFAULT_FLF2V_GENERATE_DRAFT },
     loopDraft: { ...DEFAULT_LOOP_GENERATE_DRAFT },
     upscaleDraft: { ...DEFAULT_UPSCALE_GENERATE_DRAFT },
-    faceDetailerDraft: { ...DEFAULT_FACE_DETAILER_DRAFT }
+    faceDetailerDraft: { ...DEFAULT_FACE_DETAILER_DRAFT },
+    mergeDraft: { ...DEFAULT_MERGE_DRAFT }
   }
 }
 
@@ -672,6 +700,7 @@ export function normalizeActiveViewAndPanel(value: unknown): {
   if (value === 'videoGen') return { activeView: 'videoGen', videoGenPanel: null }
   if (value === 'upscale') return { activeView: 'upscale', videoGenPanel: null }
   if (value === 'faceDetailer') return { activeView: 'faceDetailer', videoGenPanel: null }
+  if (value === 'merge') return { activeView: 'merge', videoGenPanel: null }
   return { activeView: 'prompt', videoGenPanel: null }
 }
 

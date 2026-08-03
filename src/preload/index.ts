@@ -8,7 +8,7 @@ export interface ImageItem {
 
 export type TranslationProvider = 'lmstudio' | 'ollama'
 export type UiGpuMode = 'auto' | 'software' | 'onboard'
-export type ActiveView = 'prompt' | 'videoGen' | 'upscale' | 'faceDetailer'
+export type ActiveView = 'prompt' | 'videoGen' | 'upscale' | 'faceDetailer' | 'merge'
 export type VideoGenPanel = 'i2v' | 'flf2v' | 'loop'
 export type FlfMode = 'flf2v' | 'wanfun_inpaint'
 
@@ -76,6 +76,7 @@ export interface VideoGenerateParams {
   extraLorasLow: ExtraLoraEntry[]
   selectedImagePath: string
   prompt: string
+  autoAiPrompt: boolean
   motionAmplitude: number
   noiseStrength: number
 }
@@ -119,6 +120,10 @@ export interface FaceDetailerDraft {
   shift: number
 }
 
+export interface MergeDraft {
+  videoPaths: string[]
+}
+
 export interface AppSettings {
   provider: TranslationProvider
   lmStudioBaseUrl: string
@@ -142,12 +147,14 @@ export interface AppSettings {
   promptImagePath: string
   promptText: string
   useImagePrompt: boolean
+  unloadLlmOnGenerate: boolean
   sharedComfy: SharedComfyDraft
   i2vDraft: I2vGenerateDraft
   flf2vDraft: Flf2vGenerateDraft
   loopDraft: LoopGenerateDraft
   upscaleDraft: UpscaleGenerateDraft
   faceDetailerDraft: FaceDetailerDraft
+  mergeDraft: MergeDraft
   windowWidth: number
   windowHeight: number
   windowX: number | null
@@ -176,6 +183,7 @@ export interface GalleryVideoProbeInfo {
   bitDepth: number | null
   container: string | null
   seed: number | null
+  prompt: string | null
   fps: number | null
   frameCount: number | null
 }
@@ -187,6 +195,11 @@ const api = {
     title?: string
     filters?: { name: string; extensions: string[] }[]
   }): Promise<string | null> => ipcRenderer.invoke('dialog:openFile', opts),
+
+  openFiles: (opts?: {
+    title?: string
+    filters?: { name: string; extensions: string[] }[]
+  }): Promise<string[]> => ipcRenderer.invoke('dialog:openFiles', opts),
 
   openPathInExplorer: (targetPath: string): Promise<{ ok: boolean; error?: string; path?: string }> =>
     ipcRenderer.invoke('shell:openPath', targetPath),
@@ -430,10 +443,13 @@ const api = {
     sourcePath: string
     outputFolder: string
     fileName?: string
-    /** Filename head for Video Gen: I2V / FLF2V / LOOP → `{prefix}_{date}_{seed}` */
+    /** Filename head for Video Gen: I2V / FLF2V / LOOP → `{prefix}_{date}` */
     namePrefix?: string
+    /** Written to container metadata only (not filename). */
     seed?: number
-  }): Promise<{ ok: boolean; path?: string; dir?: string; error?: string }> =>
+    /** Written to container metadata as nin_prompt. */
+    prompt?: string
+  }): Promise<{ ok: boolean; path?: string; dir?: string; error?: string; warning?: string }> =>
     ipcRenderer.invoke('gallery:saveVideo', opts),
 
   galleryListVideos: (opts: {
@@ -451,6 +467,21 @@ const api = {
     error?: string
     info?: GalleryVideoProbeInfo
   }> => ipcRenderer.invoke('gallery:probeVideo', opts),
+
+  galleryConcatVideos: (opts: {
+    paths: string[]
+    outputFolder: string
+    namePrefix?: string
+  }): Promise<{
+    ok: boolean
+    path?: string
+    dir?: string
+    error?: string
+    mode?: 'copy' | 'reencode'
+  }> => ipcRenderer.invoke('gallery:concatVideos', opts),
+
+  galleryCancelConcatVideos: (): Promise<{ ok: boolean }> =>
+    ipcRenderer.invoke('gallery:cancelConcatVideos'),
 
   toLocalUrl: (filePath: string): string => {
     const normalized = filePath.replace(/\\/g, '/')

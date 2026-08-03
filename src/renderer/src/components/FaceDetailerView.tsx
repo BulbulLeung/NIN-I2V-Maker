@@ -183,7 +183,8 @@ export function FaceDetailerView({
             codec: res.info.codec,
             bitDepth: res.info.bitDepth,
             container: res.info.container,
-            seed: res.info.seed ?? null
+            seed: res.info.seed ?? null,
+            prompt: res.info.prompt ?? null
           })
         } else {
           setResultVideoMeta({
@@ -194,7 +195,8 @@ export function FaceDetailerView({
             codec: null,
             bitDepth: null,
             container: null,
-            seed: null
+            seed: null,
+            prompt: null
           })
         }
       } catch {
@@ -483,22 +485,24 @@ export function FaceDetailerView({
     }, 250)
 
     try {
-      report('Unloading Local AI models…')
-      try {
-        const unloaded = await unloadLocalAiModels(settings)
-        const parts: string[] = []
-        if (unloaded.ollamaUnloaded.length) {
-          parts.push(`Ollama: ${unloaded.ollamaUnloaded.join(', ')}`)
+      if (settings.unloadLlmOnGenerate) {
+        report('Unloading Local AI models…')
+        try {
+          const unloaded = await unloadLocalAiModels(settings)
+          const parts: string[] = []
+          if (unloaded.ollamaUnloaded.length) {
+            parts.push(`Ollama: ${unloaded.ollamaUnloaded.join(', ')}`)
+          }
+          if (unloaded.lmStudioUnloaded.length) {
+            parts.push(`LM Studio: ${unloaded.lmStudioUnloaded.join(', ')}`)
+          }
+          for (const n of unloaded.notes) parts.push(n)
+          if (parts.length > 0) {
+            report(`Local AI unloaded — ${parts.join(' · ')}`)
+          }
+        } catch (err) {
+          report(`Local AI unload skipped: ${err instanceof Error ? err.message : String(err)}`)
         }
-        if (unloaded.lmStudioUnloaded.length) {
-          parts.push(`LM Studio: ${unloaded.lmStudioUnloaded.join(', ')}`)
-        }
-        for (const n of unloaded.notes) parts.push(n)
-        if (parts.length > 0) {
-          report(`Local AI unloaded — ${parts.join(' · ')}`)
-        }
-      } catch (err) {
-        report(`Local AI unload skipped: ${err instanceof Error ? err.message : String(err)}`)
       }
 
       report(`Uploading video… (${basenamePath(videoPath)})`)
