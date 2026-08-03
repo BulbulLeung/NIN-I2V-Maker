@@ -136,6 +136,8 @@ export function GenerateView({
   )
 
   const abortRef = useRef<AbortController | null>(null)
+  /** Monotonic id so a stale run's `finally` cannot clear a newer run's UI. */
+  const generateEpochRef = useRef(0)
   const imagePickerListRef = useRef<HTMLDivElement | null>(null)
   const draftRef = useRef(draft)
   draftRef.current = draft
@@ -331,14 +333,14 @@ export function GenerateView({
     } catch {
       /* ignore */
     }
-    setGenerating(false)
-    setBatchProgress(null)
-    onVideoGeneratingChange?.(false)
-    onStatus('Generation aborted')
+    // Keep Abort button until runGenerate's finally clears state — clearing
+    // here made Generate clickable while remaining batch items were still running.
+    onStatus('Aborting generation…', false, { sticky: true })
   }
 
   const runGenerate = async () => {
-    if (videoGenerating && !generating) {
+    if (generating) return
+    if (videoGenerating) {
       onStatus('Another video generation is already running', true)
       return
     }
@@ -437,6 +439,7 @@ export function GenerateView({
     abortRef.current?.abort()
     const ac = new AbortController()
     abortRef.current = ac
+    const runEpoch = ++generateEpochRef.current
     setGenerateElapsedSec(0)
     setBatchProgress({ current: 1, total: batchTotal })
     setGenerating(true)
@@ -509,8 +512,9 @@ export function GenerateView({
       let lastSavedPath: string | null = null
 
       for (let batchIndex = 0; batchIndex < batchTotal; batchIndex++) {
-        if (ac.signal.aborted) return
+        if (ac.signal.aborted) throw new Error('Generation cancelled')
 
+        setGenerating(true)
         setBatchProgress({ current: batchIndex + 1, total: batchTotal })
         // First run uses draft seed; later runs always random (-1).
         const runSeed = batchIndex === 0 ? d.seed : -1
@@ -571,7 +575,9 @@ export function GenerateView({
             videoCodec: s.videoCodec,
             videoBitDepth: s.videoBitDepth,
             videoCrf: s.videoCrf,
-            useColorMatch: s.useColorMatch
+            useColorMatch: s.useColorMatch,
+            motionAmplitude: d.motionAmplitude,
+            noiseStrength: d.noiseStrength
           },
           {
             signal: ac.signal,
@@ -583,7 +589,7 @@ export function GenerateView({
           }
         )
 
-        if (ac.signal.aborted) return
+        if (ac.signal.aborted) throw new Error('Generation cancelled')
 
         seedsUsed.push(result.seed)
         const videoRef = result.videos[0]
@@ -637,15 +643,23 @@ export function GenerateView({
       onStatus(msg, true)
     } finally {
       window.clearInterval(elapsedTimer)
-      if (abortRef.current === ac) abortRef.current = null
-      setGenerating(false)
-      setBatchProgress(null)
-      setGenerateElapsedSec(0)
-      onVideoGeneratingChange?.(false)
+      if (generateEpochRef.current === runEpoch) {
+        if (abortRef.current === ac) abortRef.current = null
+        setGenerating(false)
+        setBatchProgress(null)
+        setGenerateElapsedSec(0)
+        onVideoGeneratingChange?.(false)
+      }
     }
   }
 
   const frameCount = framesFromSeconds(draft.seconds, draft.fps)
+  const stepsValue = Math.max(1, Math.round(Number(draft.steps) || 1))
+  const refinerValue = Math.min(
+    stepsValue,
+    Math.max(1, Math.round(Number(draft.refinerStep) || 1))
+  )
+  const lowStepsValue = Math.max(0, stepsValue - refinerValue)
   const defaults = panel === 'i2v' ? DEFAULT_I2V_GENERATE_DRAFT : DEFAULT_FLF2V_GENERATE_DRAFT
   const flfMode: FlfMode = isFlfDraft(draft) ? draft.flfMode : 'flf2v'
   const endImagePath = isFlfDraft(draft) ? draft.endImagePath : ''
@@ -916,16 +930,65 @@ export function GenerateView({
                 {numField('FPS', 'fps', { min: 1, max: 60 })}
               </div>
               <p className="field-hint">
-                Length: {frameCount} frames (round(seconds×fps/8)×8+1)
+                Length: {frameCount} frames (round(seconds×fps)+1)
               </p>
-              <div className="field-row-grid">
-                {numField('Steps', 'steps', { min: 1, max: 100 })}
-                {numField('Refiner step', 'refinerStep', { min: 1, max: 100 })}
+              <div className="generate-steps-refiner-row">
+                <label className="field generate-steps-field">
+                  <span>Steps</span>
+                  <input
+                    type="number"
+                    min={1}
+                    max={100}
+                    step={1}
+                    disabled={generating}
+                    value={stepsValue}
+                    onChange={(e) => {
+                      const steps = Math.min(
+                        100,
+                        Math.max(1, Math.round(Number(e.target.value)) || 1)
+                      )
+                      const refinerStep = Math.min(
+                        steps,
+                        Math.max(1, Math.round(Number(draft.refinerStep) || 1))
+                      )
+                      patchDraft({ steps, refinerStep })
+                    }}
+                  />
+                </label>
+                <label className="field generate-refiner-field">
+                  <span>{`high ${refinerValue} / low ${lowStepsValue} steps`}</span>
+                  <input
+                    type="range"
+                    min={1}
+                    max={stepsValue}
+                    step={1}
+                    disabled={generating}
+                    value={refinerValue}
+                    onChange={(e) => {
+                      const n = Math.round(Number(e.target.value))
+                      patchDraft({
+                        refinerStep: Math.min(stepsValue, Math.max(1, n))
+                      })
+                    }}
+                  />
+                </label>
               </div>
               <div className="field-row-grid field-row-grid-3">
                 {numField('CFG(high)', 'cfgHigh', { step: 0.1, min: 0, max: 30 })}
                 {numField('CFG(low)', 'cfg', { step: 0.1, min: 0, max: 30 })}
                 {numField('Shift', 'shift', { step: 0.1, min: 0, max: 20 })}
+              </div>
+              <div className="field-row-grid">
+                {numField('Motion amplitude', 'motionAmplitude', {
+                  step: 0.05,
+                  min: 1,
+                  max: 2
+                })}
+                {numField('Motion noise', 'noiseStrength', {
+                  step: 0.01,
+                  min: 0,
+                  max: 0.3
+                })}
               </div>
               <label className="field">
                 <span>Seed (−1 = random)</span>

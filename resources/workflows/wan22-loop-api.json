@@ -2,9 +2,16 @@
   "_comment": "Wan22 Loop API template — generation only (no Interpolation / Upscale / Mini Meme). Built/patched by comfyWan22Loop.ts using stable node ids.",
   "_sourceUiWorkflow": "wan22-loop-ui.json",
   "_modes": {
-    "i2v": "WanImageToVideo (node 9)",
-    "flf2v": "WanFirstLastFrameToVideo (node 9) + end image (node 8)",
+    "i2v": "NINI2VWanMotionI2V when available, else WanImageToVideo (node 9)",
+    "flf2v": "NINI2VWanMotionFLF when available, else WanFirstLastFrameToVideo (node 9) + end image (node 8)",
     "wanfun_inpaint": "WanFunInpaintToVideo (node 9) + end image (node 8)"
+  },
+  "_motionEnhance": {
+    "nodes": ["NINI2VWanMotionI2V", "NINI2VWanMotionFLF"],
+    "inputs": {
+      "motion_amplitude": "1.0–2.0 (default 1.15); scales brightness-protected concat latent delta",
+      "noise_strength": "0–0.3 (default 0); optional mid-frame latent noise"
+    }
   },
   "_nodeIds": {
     "1": "UNETLoader high",
@@ -15,7 +22,7 @@
     "6": "CLIPTextEncode negative",
     "7": "LoadImage start",
     "8": "LoadImage end (FLF / WanFunInpaint)",
-    "9": "Wan conditioning",
+    "9": "Wan conditioning (NINI2VWanMotion* or native)",
     "10": "ModelSamplingSD3 high",
     "11": "ModelSamplingSD3 low",
     "12": "LoraLoaderModelOnly high (optional)",
@@ -68,7 +75,7 @@
       "inputs": { "image": "PLACEHOLDER_START.png" }
     },
     "9": {
-      "class_type": "WanImageToVideo",
+      "class_type": "NINI2VWanMotionI2V",
       "inputs": {
         "positive": ["5", 0],
         "negative": ["6", 0],
@@ -77,7 +84,9 @@
         "width": 544,
         "height": 960,
         "length": 81,
-        "batch_size": 1
+        "batch_size": 1,
+        "motion_amplitude": 1.15,
+        "noise_strength": 0
       }
     },
     "10": {

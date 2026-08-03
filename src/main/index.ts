@@ -131,6 +131,8 @@ interface VideoGenerateParams {
   extraLorasLow: ExtraLoraEntry[]
   selectedImagePath: string
   prompt: string
+  motionAmplitude: number
+  noiseStrength: number
 }
 
 type I2vGenerateDraft = VideoGenerateParams
@@ -256,7 +258,9 @@ const DEFAULT_VIDEO_PARAMS: VideoGenerateParams = {
   extraLorasHigh: [],
   extraLorasLow: [],
   selectedImagePath: '',
-  prompt: ''
+  prompt: '',
+  motionAmplitude: 1.15,
+  noiseStrength: 0
 }
 
 const DEFAULT_I2V_DRAFT: I2vGenerateDraft = { ...DEFAULT_VIDEO_PARAMS }
@@ -507,7 +511,9 @@ function normalizeVideoParams(raw: unknown, defaults: VideoGenerateParams): Vide
       }))
     })(),
     selectedImagePath: strField(o.selectedImagePath),
-    prompt: strField(o.prompt)
+    prompt: strField(o.prompt),
+    motionAmplitude: Math.min(2, Math.max(1, numField(o.motionAmplitude, defaults.motionAmplitude))),
+    noiseStrength: Math.min(0.3, Math.max(0, numField(o.noiseStrength, defaults.noiseStrength)))
   }
 }
 

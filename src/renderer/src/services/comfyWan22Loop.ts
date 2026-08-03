@@ -89,6 +89,10 @@ export interface ComfyWan22LoopParams {
   videoCrf?: number
   /** Match decoded frames to start image colors (NINI2VColorMatch). */
   useColorMatch?: boolean
+  /** Latent motion amplify (NINI2VWanMotion*). 1.0 = native-like. */
+  motionAmplitude?: number
+  /** Optional temporal noise on concat mid-frames (0 = off). */
+  noiseStrength?: number
 }
 
 export interface VideoNodeCaps {
@@ -96,6 +100,10 @@ export interface VideoNodeCaps {
   hasNinSaveVideo: boolean
   /** NINI2VColorMatch after VAE decode. */
   hasNinColorMatch: boolean
+  /** NINI2VWanMotionI2V — brightness-protected motion amplify for I2V. */
+  hasNinWanMotionI2v: boolean
+  /** NINI2VWanMotionFLF — mid-frame motion amplify for FLF / Loop. */
+  hasNinWanMotionFlf: boolean
   createHasBitDepth: boolean
   saveHasFormat: boolean
   saveHasCodec: boolean
@@ -128,10 +136,18 @@ function imageRef(name: string, subfolder?: string): string {
   return subfolder ? `${subfolder}/${name}` : name
 }
 
-function wanClassType(mode: Wan22VideoMode): string {
-  if (mode === 'flf2v') return 'WanFirstLastFrameToVideo'
+function wanClassType(mode: Wan22VideoMode, caps?: VideoNodeCaps): string {
   if (mode === 'wanfun_inpaint') return 'WanFunInpaintToVideo'
-  return 'WanImageToVideo'
+  if (mode === 'flf2v') {
+    return caps?.hasNinWanMotionFlf ? 'NINI2VWanMotionFLF' : 'WanFirstLastFrameToVideo'
+  }
+  return caps?.hasNinWanMotionI2v ? 'NINI2VWanMotionI2V' : 'WanImageToVideo'
+}
+
+function usesNinWanMotion(mode: Wan22VideoMode, caps?: VideoNodeCaps): boolean {
+  if (mode === 'wanfun_inpaint') return false
+  if (mode === 'flf2v') return Boolean(caps?.hasNinWanMotionFlf)
+  return Boolean(caps?.hasNinWanMotionI2v)
 }
 
 /** Chain LoraLoaderModelOnly nodes; returns the tip node id for KSampler.model. */
@@ -261,6 +277,8 @@ export async function probeVideoNodeCaps(baseUrl: string): Promise<VideoNodeCaps
   const defaults: VideoNodeCaps = {
     hasNinSaveVideo: false,
     hasNinColorMatch: false,
+    hasNinWanMotionI2v: false,
+    hasNinWanMotionFlf: false,
     createHasBitDepth: false,
     saveHasFormat: true,
     saveHasCodec: true,
@@ -272,9 +290,11 @@ export async function probeVideoNodeCaps(baseUrl: string): Promise<VideoNodeCaps
   }
   try {
     const base = baseUrl.replace(/\/$/, '')
-    const [ninRes, colorRes, createRes, saveRes] = await Promise.all([
+    const [ninRes, colorRes, motionI2vRes, motionFlfRes, createRes, saveRes] = await Promise.all([
       comfyHttp(`${base}/object_info/NINI2VSaveVideo`, { timeoutMs: 15_000 }),
       comfyHttp(`${base}/object_info/NINI2VColorMatch`, { timeoutMs: 15_000 }),
+      comfyHttp(`${base}/object_info/NINI2VWanMotionI2V`, { timeoutMs: 15_000 }),
+      comfyHttp(`${base}/object_info/NINI2VWanMotionFLF`, { timeoutMs: 15_000 }),
       comfyHttp(`${base}/object_info/CreateVideo`, { timeoutMs: 15_000 }),
       comfyHttp(`${base}/object_info/SaveVideo`, { timeoutMs: 15_000 })
     ])
@@ -297,6 +317,22 @@ export async function probeVideoNodeCaps(baseUrl: string): Promise<VideoNodeCaps
       try {
         const parsed = JSON.parse(colorRes.text) as Record<string, unknown>
         if (parsed.NINI2VColorMatch) defaults.hasNinColorMatch = true
+      } catch {
+        /* ignore */
+      }
+    }
+    if (motionI2vRes.ok && motionI2vRes.text) {
+      try {
+        const parsed = JSON.parse(motionI2vRes.text) as Record<string, unknown>
+        if (parsed.NINI2VWanMotionI2V) defaults.hasNinWanMotionI2v = true
+      } catch {
+        /* ignore */
+      }
+    }
+    if (motionFlfRes.ok && motionFlfRes.text) {
+      try {
+        const parsed = JSON.parse(motionFlfRes.text) as Record<string, unknown>
+        if (parsed.NINI2VWanMotionFLF) defaults.hasNinWanMotionFlf = true
       } catch {
         /* ignore */
       }
@@ -458,6 +494,12 @@ export function buildWan22LoopWorkflow(
   if (needsEnd) {
     wanInputs.end_image = [WAN22_NODE.endImage, 0]
   }
+  if (usesNinWanMotion(p.mode, caps)) {
+    const amp = Number.isFinite(p.motionAmplitude) ? Number(p.motionAmplitude) : 1.15
+    const noise = Number.isFinite(p.noiseStrength) ? Number(p.noiseStrength) : 0
+    wanInputs.motion_amplitude = Math.min(2, Math.max(1, amp))
+    wanInputs.noise_strength = Math.min(0.3, Math.max(0, noise))
+  }
 
   const graph: Record<string, unknown> = {
     [WAN22_NODE.unetHigh]: {
@@ -509,7 +551,7 @@ export function buildWan22LoopWorkflow(
       }
     },
     [WAN22_NODE.wanCond]: {
-      class_type: wanClassType(p.mode),
+      class_type: wanClassType(p.mode, caps),
       inputs: wanInputs
     },
     [WAN22_NODE.shiftHigh]: {
@@ -694,7 +736,18 @@ async function waitForPromptDone(
                 : ''
             throw new Error(`ComfyUI reported an error while generating video${detail}`)
           }
-          if (entry.status?.completed || entry.outputs) {
+          // Only treat as done when Comfy marks completed/success, or when
+          // outputs are non-empty. Empty `outputs: {}` is truthy in JS and used
+          // to end the wait early mid-run (batch >1 then flipped Generate while
+          // Comfy was still working).
+          const statusStrOk = statusStr === 'success'
+          const completed = entry.status?.completed === true || statusStrOk
+          const outputs = entry.outputs
+          const hasOutputs =
+            Boolean(outputs) &&
+            typeof outputs === 'object' &&
+            Object.keys(outputs as object).length > 0
+          if (completed || (hasOutputs && entry.status?.completed !== false)) {
             return entry as unknown as Record<string, unknown>
           }
         }
@@ -794,6 +847,10 @@ async function openComfyProgressWs(
 
   let currentNode: string | null = null
   let closed = false
+  /** Marks start of current sampling step (or phase) for per-step timing. */
+  let stepMarkAt = Date.now()
+  let lastStepKey = ''
+  let lastStepSec = 0
 
   const push = (message: string) => {
     if (closed) return
@@ -813,6 +870,9 @@ async function openComfyProgressWs(
         if (!currentNode) return
         const phase = samplingPhase(currentNode)
         if (phase) {
+          stepMarkAt = Date.now()
+          lastStepKey = ''
+          lastStepSec = 0
           push(`Generating video (${phase})…`)
         } else {
           push(`Running: ${describeNode(currentNode)}`)
@@ -831,7 +891,16 @@ async function openComfyProgressWs(
         const node = currentNode || data.node || null
         const phase = samplingPhase(node)
         if (phase) {
-          push(`Generating video — step ${displayStep}/${total} (${phase})`)
+          const now = Date.now()
+          const stepKey = `${phase}:${displayStep}/${total}`
+          if (stepKey !== lastStepKey) {
+            lastStepSec = (now - stepMarkAt) / 1000
+            stepMarkAt = now
+            lastStepKey = stepKey
+          }
+          push(
+            `Generating video — step ${displayStep}/${total} (${phase}) - ${lastStepSec.toFixed(2)}sec`
+          )
         } else {
           push(`${describeNode(node)} — step ${displayStep}/${total}`)
         }

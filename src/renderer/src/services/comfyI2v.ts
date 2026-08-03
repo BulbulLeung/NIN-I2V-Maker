@@ -280,7 +280,14 @@ async function waitForPromptDone(
           if (statusStr === 'error') {
             throw new Error('ComfyUI reported an error while generating video')
           }
-          if (entry.status?.completed || entry.outputs) {
+          const statusStrOk = statusStr === 'success'
+          const completed = entry.status?.completed === true || statusStrOk
+          const outputs = entry.outputs
+          const hasOutputs =
+            Boolean(outputs) &&
+            typeof outputs === 'object' &&
+            Object.keys(outputs as object).length > 0
+          if (completed || (hasOutputs && entry.status?.completed !== false)) {
             return entry as unknown as Record<string, unknown>
           }
         }

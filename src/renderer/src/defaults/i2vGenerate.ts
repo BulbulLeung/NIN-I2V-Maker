@@ -155,6 +155,13 @@ export interface VideoGenerateParams {
   extraLorasLow: ExtraLoraEntry[]
   selectedImagePath: string
   prompt: string
+  /**
+   * Latent motion amplify for NINI2VWanMotion* (1.0 = native-like).
+   * Higher values restore dynamics lost at high resolution / Lightning.
+   */
+  motionAmplitude: number
+  /** Optional concat-latent temporal noise (0 = off). */
+  noiseStrength: number
 }
 
 export type I2vGenerateDraft = VideoGenerateParams
@@ -232,7 +239,9 @@ export const DEFAULT_VIDEO_PARAMS: VideoGenerateParams = {
   extraLorasHigh: [],
   extraLorasLow: [],
   selectedImagePath: '',
-  prompt: ''
+  prompt: '',
+  motionAmplitude: 1.15,
+  noiseStrength: 0
 }
 
 export const DEFAULT_I2V_GENERATE_DRAFT: I2vGenerateDraft = {
@@ -251,11 +260,11 @@ export const DEFAULT_LOOP_GENERATE_DRAFT: LoopGenerateDraft = {
   flfMode: 'flf2v'
 }
 
-/** Frame count from workflow: (round((seconds * fps) / 8) * 8) + 1 */
+/** Frame count: round(seconds * fps) + 1 */
 export function framesFromSeconds(seconds: number, fps: number): number {
   const s = Math.max(0.1, seconds)
   const f = Math.max(1, fps)
-  return Math.round((s * f) / 8) * 8 + 1
+  return Math.round(s * f) + 1
 }
 
 function num(v: unknown, fallback: number, min?: number, max?: number): number {
@@ -366,7 +375,9 @@ function normalizeVideoParams(
       return cloneExtraLorasWithNewIds(normalizeExtraLoras(r.extraLoras))
     })(),
     selectedImagePath: str(r.selectedImagePath),
-    prompt: str(r.prompt)
+    prompt: str(r.prompt),
+    motionAmplitude: num(r.motionAmplitude, defaults.motionAmplitude, 1, 2),
+    noiseStrength: num(r.noiseStrength, defaults.noiseStrength, 0, 0.3)
   }
 }
 

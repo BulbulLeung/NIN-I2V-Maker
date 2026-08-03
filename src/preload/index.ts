@@ -74,6 +74,8 @@ export interface VideoGenerateParams {
   extraLorasLow: ExtraLoraEntry[]
   selectedImagePath: string
   prompt: string
+  motionAmplitude: number
+  noiseStrength: number
 }
 
 export type I2vGenerateDraft = VideoGenerateParams
