@@ -1,8 +1,8 @@
 {
-  "name": "nin-i2v-maker",
+  "name": "pictoer",
   "version": "0.1.0",
-  "description": "NIN I2V Maker — Wan2.2 image-to-video prompt generation and ComfyUI generation",
-  "productName": "NIN I2V Maker",
+  "description": "Pictoer — Wan2.2 image-to-video prompt generation and ComfyUI generation",
+  "productName": "Pictoer",
   "author": "NIN",
   "main": "./out/main/index.js",
   "scripts": {
@@ -14,8 +14,8 @@
     "dist:dir": "npm run build && electron-builder --win --dir"
   },
   "build": {
-    "appId": "com.nin.i2vmaker",
-    "productName": "NIN I2V Maker",
+    "appId": "com.nin.pictoer",
+    "productName": "Pictoer",
     "directories": {
       "output": "release"
     },

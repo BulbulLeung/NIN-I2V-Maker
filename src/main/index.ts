@@ -58,7 +58,7 @@ try {
 }
 
 try {
-  app.setName('NIN I2V Maker')
+  app.setName('Pictoer')
 } catch {
   /* ignore */
 }

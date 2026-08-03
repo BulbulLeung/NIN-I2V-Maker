@@ -149,7 +149,7 @@ function normalizeExePath(exePath: string): string {
   return exePath.trim().toLowerCase().replace(/\//g, '\\')
 }
 
-/** True when exePath is this app's binary (dev electron.exe or packaged I2V Maker.exe). */
+/** True when exePath is this app's binary (dev electron.exe or packaged Pictoer.exe). */
 function isOwnAppExePath(exePath: string | null | undefined): boolean {
   if (!exePath?.trim()) return false
   return normalizeExePath(exePath) === normalizeExePath(process.execPath)
@@ -198,7 +198,7 @@ function finalizeGpuVramApps(
       const killable = !isProtectedGpuProcess(a.pid, a.name, a.path ?? null)
       return {
         pid: a.pid,
-        name: own ? 'I2V Maker' : a.name,
+        name: own ? 'Pictoer' : a.name,
         memUsedMiB: Math.round(a.memUsedMiB * 10) / 10,
         killable
       }

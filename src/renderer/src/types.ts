@@ -1,5 +1,6 @@
 import {
-  createDefaultPromptPreset,
+  createDefaultPromptPresets,
+  ensureBuiltinPromptPresets,
   DEFAULT_PROMPT_PRESET_ID
 } from './defaults/i2vPromptPresets'
 import {
@@ -167,8 +168,6 @@ export interface AppSettings {
   upscaleDraft: UpscaleGenerateDraft
 }
 
-const defaultPreset = createDefaultPromptPreset()
-
 export const DEFAULT_SETTINGS: AppSettings = {
   provider: 'lmstudio',
   lmStudioBaseUrl: 'http://localhost:1234/v1',
@@ -177,7 +176,7 @@ export const DEFAULT_SETTINGS: AppSettings = {
   targetLanguage: 'zh-TW',
   lastFolder: null,
   imageFolders: [],
-  promptPresets: [defaultPreset],
+  promptPresets: createDefaultPromptPresets(),
   activePromptPresetId: DEFAULT_PROMPT_PRESET_ID,
   sidebarWidth: 260,
   rightPaneWidth: 380,
@@ -214,10 +213,11 @@ export function normalizeSettings(
 ): AppSettings {
   const r = raw as Partial<AppSettings> & Record<string, unknown>
   const uiGpuMode = normalizeUiGpuMode(r.uiGpuMode ?? (r.disableUiGpu ? 'software' : 'auto'))
-  const presets =
+  const presets = ensureBuiltinPromptPresets(
     Array.isArray(r.promptPresets) && r.promptPresets.length > 0
       ? (r.promptPresets as PromptPreset[])
-      : [createDefaultPromptPreset()]
+      : createDefaultPromptPresets()
+  )
   const activeId =
     typeof r.activePromptPresetId === 'string' &&
     presets.some((p) => p.id === r.activePromptPresetId)

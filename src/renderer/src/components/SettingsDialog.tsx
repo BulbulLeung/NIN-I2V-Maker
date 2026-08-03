@@ -16,7 +16,7 @@ import {
   VIDEO_SAVE_CODEC_OPTIONS,
   VIDEO_SAVE_FORMAT_OPTIONS
 } from '../types'
-import { createDefaultPromptPreset } from '../defaults/i2vPromptPresets'
+import { createDefaultPromptPresets } from '../defaults/i2vPromptPresets'
 import { listModels, testConnection } from '../services/translation'
 import {
   isSetupItemIncomplete,
@@ -137,7 +137,7 @@ export function SettingsDialog({ settings, open, initialTab, onClose, onSave }: 
 
   const removePreset = (id: string) => {
     let next = settings.promptPresets.filter((p) => p.id !== id)
-    if (next.length === 0) next = [createDefaultPromptPreset()]
+    if (next.length === 0) next = createDefaultPromptPresets()
     const activeId =
       next.some((p) => p.id === settings.activePromptPresetId)
         ? settings.activePromptPresetId

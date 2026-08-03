@@ -233,12 +233,12 @@ export function ResourceMonitorPane({ device, active = true }: Props) {
               ) : (
                 <ul className="lora-monitor-app-list" ref={appListRef}>
                   {apps.map((app) => {
-                    const isSelf = app.name === 'I2V Maker' && !app.killable
+                    const isSelf = app.name === 'Pictoer' && !app.killable
                     const isProtected = !app.killable && !isSelf
                     const killHint = app.killable
                       ? `End ${app.name}`
                       : isSelf
-                        ? 'I2V Maker itself — cannot end'
+                        ? 'Pictoer itself — cannot end'
                         : 'System process — cannot end'
                     const nameClass = isSelf
                       ? 'lora-monitor-app-name lora-monitor-app-name--self'

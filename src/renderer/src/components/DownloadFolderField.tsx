@@ -25,7 +25,7 @@ export function DownloadFolderField({ value, onChange, disabled = false }: Props
         <FieldHintIcon title="Download folder">
           Shared by Python install and ComfyUI downloads. Uses <code>{'{folder}'}/python</code> and{' '}
           <code>{'{folder}'}/models</code>. Empty defaults to{' '}
-          <code>AppData\Roaming\NIN I2V Maker</code>.
+          <code>AppData\Roaming\Pictoer</code>.
         </FieldHintIcon>
       </span>
       <div className="model-row">
@@ -33,7 +33,7 @@ export function DownloadFolderField({ value, onChange, disabled = false }: Props
           type="text"
           value={value}
           onChange={(e) => onChange(e.target.value)}
-          placeholder="Empty = AppData\Roaming\NIN I2V Maker"
+          placeholder="Empty = AppData\Roaming\Pictoer"
           spellCheck={false}
           disabled={disabled}
         />

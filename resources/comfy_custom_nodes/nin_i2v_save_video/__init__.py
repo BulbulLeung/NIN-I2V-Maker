@@ -1,5 +1,5 @@
 """
-NIN I2V Maker — ComfyUI custom nodes.
+Pictoer — ComfyUI custom nodes.
 - NINI2VLoadVideo: decode video file from Comfy input/ to IMAGE batch via PyAV
 - NINI2VSaveVideo: encode IMAGE batches to H264 / H265 / AV1 / VP9 / ProRes via PyAV
 - NINI2VColorMatch: Reinhard LAB color match (start image → decoded frames)
@@ -125,7 +125,7 @@ class NINI2VSaveVideo:
     RETURN_TYPES = ()
     FUNCTION = "save_video"
     OUTPUT_NODE = True
-    CATEGORY = "NIN I2V Maker"
+    CATEGORY = "Pictoer"
     DESCRIPTION = "Encode IMAGE frames directly to H264/H265/AV1/VP9/ProRes (no H264 intermediate)."
 
     def save_video(
@@ -308,7 +308,7 @@ class NINI2VColorMatch:
     RETURN_TYPES = ("IMAGE",)
     RETURN_NAMES = ("image",)
     FUNCTION = "color_match"
-    CATEGORY = "NIN I2V Maker"
+    CATEGORY = "Pictoer"
     DESCRIPTION = (
         "Match target frame colors to a reference image (Reinhard LAB). "
         "Use the start still as image_ref after VAE decode."
@@ -369,7 +369,7 @@ class NINI2VLoadVideo:
     RETURN_TYPES = ("IMAGE",)
     RETURN_NAMES = ("images",)
     FUNCTION = "load_video"
-    CATEGORY = "NIN I2V Maker"
+    CATEGORY = "Pictoer"
     DESCRIPTION = "Decode a video from ComfyUI input/ into an IMAGE batch (RGB float 0–1)."
 
     def load_video(self, video: str):

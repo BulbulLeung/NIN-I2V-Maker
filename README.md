@@ -1,4 +1,4 @@
-# NIN I2V Maker
+# Pictoer
 
 **Prompt → Generate** for Wan 2.2 Image-to-Video. Create motion prompts from still images with a local vision LLM, then generate videos through **ComfyUI** — all in one Windows app.
 
@@ -76,7 +76,7 @@ npm run dist
 
 Output under `release/`.
 
-Settings are stored at `%AppData%\NIN I2V Maker\settings.json`.
+Settings are stored at `%AppData%\Pictoer\settings.json`.
 
 ---
 

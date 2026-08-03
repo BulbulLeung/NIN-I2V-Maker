@@ -12,7 +12,7 @@ import {
   type UpscaleGenerateDraft,
   type VideoGenPanel
 } from './types'
-import { createDefaultPromptPreset } from './defaults/i2vPromptPresets'
+import { createDefaultPromptPresets } from './defaults/i2vPromptPresets'
 import { parseSidecarCaption } from './utils/sidecarCaption'
 import { SettingsDialog, type SettingsTab } from './components/SettingsDialog'
 import { PromptView } from './components/PromptView'
@@ -86,11 +86,11 @@ export function App() {
         const raw = await window.api.getSettings()
         let next = normalizeSettings(raw as unknown as Record<string, unknown>)
         if (!next.promptPresets.length) {
-          const preset = createDefaultPromptPreset()
+          const presets = createDefaultPromptPresets()
           next = {
             ...next,
-            promptPresets: [preset],
-            activePromptPresetId: preset.id
+            promptPresets: presets,
+            activePromptPresetId: presets[0].id
           }
         }
         if (!cancelled) {
