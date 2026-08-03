@@ -21,6 +21,9 @@ export function useBidirectionalTranslate({
 }: Options) {
   const [translating, setTranslating] = useState(false)
   const [translatingPath, setTranslatingPath] = useState<string | null>(null)
+  const [translatingDirection, setTranslatingDirection] = useState<
+    'en-to-target' | 'target-to-en' | null
+  >(null)
   const [error, setError] = useState<string | null>(null)
 
   const requestId = useRef(0)
@@ -39,14 +42,19 @@ export function useBidirectionalTranslate({
     trTimer.current = null
   }, [])
 
-  const cancelInFlight = useCallback(() => {
-    clearTimers()
+  const abortInFlightOnly = useCallback(() => {
     abortRef.current?.abort()
     abortRef.current = null
     requestId.current += 1
     setTranslating(false)
     setTranslatingPath(null)
-  }, [clearTimers])
+    setTranslatingDirection(null)
+  }, [])
+
+  const cancelInFlight = useCallback(() => {
+    clearTimers()
+    abortInFlightOnly()
+  }, [clearTimers, abortInFlightOnly])
 
   const runTranslate = useCallback(
     async (
@@ -65,6 +73,7 @@ export function useBidirectionalTranslate({
         imagePath !== undefined ? imagePath : selectedPathRef.current
       setTranslating(true)
       setTranslatingPath(pathForRequest)
+      setTranslatingDirection(direction)
       setError(null)
       try {
         const result = await translateText(settingsRef.current, text, direction, ac.signal)
@@ -83,6 +92,7 @@ export function useBidirectionalTranslate({
         if (id === requestId.current) {
           setTranslating(false)
           setTranslatingPath(null)
+          setTranslatingDirection(null)
         }
       }
     },
@@ -92,25 +102,29 @@ export function useBidirectionalTranslate({
   const scheduleEnglishToTarget = useCallback(
     (text: string) => {
       if (!enabled) return
-      if (enTimer.current) clearTimeout(enTimer.current)
+      // New edit: cancel any unfinished translation immediately, then debounce a fresh run.
+      abortInFlightOnly()
+      clearTimers()
       const pathAtSchedule = selectedPathRef.current
       enTimer.current = setTimeout(() => {
         void runTranslate(text, 'en-to-target', pathAtSchedule)
       }, DEBOUNCE_MS)
     },
-    [enabled, runTranslate]
+    [enabled, runTranslate, abortInFlightOnly, clearTimers]
   )
 
   const scheduleTargetToEnglish = useCallback(
     (text: string) => {
       if (!enabled) return
-      if (trTimer.current) clearTimeout(trTimer.current)
+      // New edit: cancel any unfinished translation immediately, then debounce a fresh run.
+      abortInFlightOnly()
+      clearTimers()
       const pathAtSchedule = selectedPathRef.current
       trTimer.current = setTimeout(() => {
         void runTranslate(text, 'target-to-en', pathAtSchedule)
       }, DEBOUNCE_MS)
     },
-    [enabled, runTranslate]
+    [enabled, runTranslate, abortInFlightOnly, clearTimers]
   )
 
   const translateEnglishToTargetNow = useCallback(
@@ -149,6 +163,7 @@ export function useBidirectionalTranslate({
   return {
     translating,
     translatingPath,
+    translatingDirection,
     error,
     setError,
     cancelInFlight,

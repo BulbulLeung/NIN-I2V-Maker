@@ -80,6 +80,7 @@ export function PromptView({
   const {
     translating,
     translatingPath,
+    translatingDirection,
     error: translateError,
     cancelInFlight,
     scheduleEnglishToTarget,
@@ -418,8 +419,13 @@ export function PromptView({
 
   const selected = images.find((img) => img.path === selectedPath) ?? null
   const previewUrl = selectedPath ? window.api.toLocalUrl(selectedPath) : null
-  const showTranslateOverlay =
+  const translateActive =
     translating && translatingPath === selectedPath && !generating
+  // Overlay only the destination field so the source stays editable during AI translation.
+  const showEnglishTranslateOverlay =
+    translateActive && translatingDirection === 'target-to-en'
+  const showTranslatedTranslateOverlay =
+    translateActive && translatingDirection === 'en-to-target'
 
   return (
     <div
@@ -656,7 +662,7 @@ export function PromptView({
                   : 'I2V motion prompt (English)'
               }
             />
-            {generating ? (
+            {generating || showEnglishTranslateOverlay ? (
               <div className="caption-field-overlay">
                 <div className="caption-spinner" />
               </div>
@@ -697,7 +703,7 @@ export function PromptView({
                   : `Translation (${langLabel})`
               }
             />
-            {showTranslateOverlay ? (
+            {showTranslatedTranslateOverlay ? (
               <div className="caption-field-overlay">
                 <div className="caption-spinner" />
               </div>
