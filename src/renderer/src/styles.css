@@ -443,16 +443,16 @@ button.danger.kbd-focus {
 
 .system-message-bar {
   display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 0.65rem;
+  align-items: flex-start;
+  justify-content: flex-start;
+  gap: 0.55rem;
   flex-shrink: 0;
   min-height: 1.85rem;
-  padding: 0.28rem 0.9rem;
+  padding: 0.28rem 0.75rem;
   border-top: 1px solid var(--border);
   background: #15181e;
   font-size: 0.78rem;
-  line-height: 1.3;
+  line-height: 1.35;
 }
 
 .system-message-bar.is-error {
@@ -460,14 +460,137 @@ button.danger.kbd-focus {
   background: #1c1618;
 }
 
+.system-message-log-wrap {
+  position: relative;
+  flex-shrink: 0;
+  align-self: center;
+}
+
+.system-message-log-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 1.45rem;
+  height: 1.45rem;
+  padding: 0;
+  border-radius: 5px;
+  border: 1px solid transparent;
+  background: transparent;
+  color: var(--text-muted);
+  cursor: pointer;
+}
+
+.system-message-log-btn:hover {
+  color: var(--text);
+  background: var(--bg-elevated);
+  border-color: var(--border);
+}
+
+.system-message-log-btn.active {
+  color: var(--text);
+  background: var(--bg-elevated);
+  border-color: #4a5160;
+}
+
+.system-message-log-icon {
+  display: block;
+}
+
+.system-message-log-panel {
+  position: absolute;
+  left: 0;
+  bottom: calc(100% + 6px);
+  z-index: 50;
+  display: flex;
+  flex-direction: column;
+  width: min(52rem, calc(100vw - 1.5rem));
+  max-height: min(22rem, 50vh);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--bg-elevated);
+  box-shadow: 0 10px 28px rgba(0, 0, 0, 0.4);
+  overflow: hidden;
+}
+
+.system-message-log-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.75rem;
+  flex-shrink: 0;
+  padding: 0.45rem 0.65rem;
+  border-bottom: 1px solid var(--border);
+  color: var(--text);
+  font-size: 0.78rem;
+  font-weight: 600;
+}
+
+.system-message-log-close {
+  margin: 0;
+  padding: 0.15rem 0.45rem;
+  border-radius: 4px;
+  border: 1px solid var(--border);
+  background: var(--bg);
+  color: var(--text-muted);
+  font-size: 0.72rem;
+  cursor: pointer;
+}
+
+.system-message-log-close:hover {
+  color: var(--text);
+  border-color: #4a5160;
+}
+
+.system-message-log-empty {
+  margin: 0;
+  padding: 0.85rem 0.75rem;
+  color: var(--text-muted);
+  font-size: 0.78rem;
+}
+
+.system-message-log-list {
+  margin: 0;
+  padding: 0.35rem 0;
+  list-style: none;
+  overflow: auto;
+  min-height: 0;
+}
+
+.system-message-log-item {
+  display: grid;
+  grid-template-columns: 4.4rem minmax(0, 1fr);
+  gap: 0.55rem;
+  padding: 0.35rem 0.75rem;
+  color: var(--ok);
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+.system-message-log-item.is-error {
+  color: var(--danger);
+}
+
+.system-message-log-time {
+  flex-shrink: 0;
+  color: var(--text-muted);
+  font-variant-numeric: tabular-nums;
+  font-family: var(--mono);
+  font-size: 0.72rem;
+  line-height: 1.4;
+}
+
+.system-message-log-text {
+  min-width: 0;
+}
+
 .system-message-bar-text {
   min-width: 0;
-  max-width: min(70%, 48rem);
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-  text-align: right;
+  flex: 1;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  text-align: left;
   color: var(--ok);
+  padding: 0.12rem 0;
 }
 
 .system-message-bar-text.is-error {

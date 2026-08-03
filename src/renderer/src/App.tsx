@@ -29,13 +29,31 @@ import {
 interface StatusState {
   message: string
   isError: boolean
-  sticky: boolean
 }
+
+interface StatusLogEntry {
+  id: number
+  message: string
+  isError: boolean
+  at: number
+}
+
+const STATUS_LOG_MAX = 200
 
 function folderLabel(path: string): string {
   const norm = path.replace(/\\/g, '/')
   const i = norm.lastIndexOf('/')
   return i >= 0 ? path.slice(i + 1) : path
+}
+
+function formatStatusLogTime(at: number): string {
+  const d = new Date(at)
+  return d.toLocaleTimeString(undefined, {
+    hour: '2-digit',
+    minute: '2-digit',
+    second: '2-digit',
+    hour12: false
+  })
 }
 
 export function App() {
@@ -44,19 +62,22 @@ export function App() {
   const [settingsOpen, setSettingsOpen] = useState(false)
   const [settingsInitialTab, setSettingsInitialTab] = useState<SettingsTab | null>(null)
   const [folderMenuOpen, setFolderMenuOpen] = useState(false)
+  const [statusLogOpen, setStatusLogOpen] = useState(false)
   const [videoGenerating, setVideoGenerating] = useState(false)
   const [promptImages, setPromptImages] = useState<ImageItem[]>([])
   const [status, setStatus] = useState<StatusState>({
     message: '',
-    isError: false,
-    sticky: false
+    isError: false
   })
+  const [statusLog, setStatusLog] = useState<StatusLogEntry[]>([])
 
   const persistTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
   const settingsRef = useRef(settings)
   settingsRef.current = settings
-  const statusClearTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
+  const statusLogIdRef = useRef(0)
   const folderMenuRef = useRef<HTMLDivElement | null>(null)
+  const statusLogPanelRef = useRef<HTMLDivElement | null>(null)
+  const statusLogListRef = useRef<HTMLUListElement | null>(null)
 
   useEffect(() => {
     let cancelled = false
@@ -80,11 +101,17 @@ export function App() {
         if (!cancelled) {
           setSettingsState(DEFAULT_SETTINGS)
           setReady(true)
-          setStatus({
-            message: err instanceof Error ? err.message : String(err),
-            isError: true,
-            sticky: false
-          })
+          const message = err instanceof Error ? err.message : String(err)
+          setStatus({ message, isError: true })
+          statusLogIdRef.current += 1
+          setStatusLog([
+            {
+              id: statusLogIdRef.current,
+              message,
+              isError: true,
+              at: Date.now()
+            }
+          ])
         }
       }
     })()
@@ -133,17 +160,21 @@ export function App() {
   }, [])
 
   const onStatus = useCallback(
-    (msg: string, isError = false, options?: { sticky?: boolean }) => {
-      if (statusClearTimer.current) clearTimeout(statusClearTimer.current)
-      const sticky = Boolean(options?.sticky)
-      setStatus({ message: msg, isError, sticky })
-      if (!sticky && msg) {
-        statusClearTimer.current = setTimeout(() => {
-          setStatus((prev) =>
-            prev.message === msg ? { message: '', isError: false, sticky: false } : prev
-          )
-        }, 5000)
+    (msg: string, isError = false, _options?: { sticky?: boolean }) => {
+      // sticky is accepted for callers but ignored: messages stay until overwritten.
+      setStatus({ message: msg, isError })
+      if (!msg) return
+      statusLogIdRef.current += 1
+      const entry: StatusLogEntry = {
+        id: statusLogIdRef.current,
+        message: msg,
+        isError,
+        at: Date.now()
       }
+      setStatusLog((prev) => {
+        const next = [...prev, entry]
+        return next.length > STATUS_LOG_MAX ? next.slice(-STATUS_LOG_MAX) : next
+      })
     },
     []
   )
@@ -177,6 +208,30 @@ export function App() {
     document.addEventListener('mousedown', onDocClick)
     return () => document.removeEventListener('mousedown', onDocClick)
   }, [folderMenuOpen])
+
+  useEffect(() => {
+    if (!statusLogOpen) return
+    const onDocClick = (e: MouseEvent) => {
+      if (!statusLogPanelRef.current?.contains(e.target as Node)) {
+        setStatusLogOpen(false)
+      }
+    }
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') setStatusLogOpen(false)
+    }
+    document.addEventListener('mousedown', onDocClick)
+    document.addEventListener('keydown', onKey)
+    return () => {
+      document.removeEventListener('mousedown', onDocClick)
+      document.removeEventListener('keydown', onKey)
+    }
+  }, [statusLogOpen])
+
+  useEffect(() => {
+    if (!statusLogOpen) return
+    const list = statusLogListRef.current
+    if (list) list.scrollTop = list.scrollHeight
+  }, [statusLogOpen, statusLog])
 
   const addFolder = async () => {
     const dir = await window.api.openFolder()
@@ -470,10 +525,73 @@ export function App() {
         aria-live="polite"
         aria-atomic="true"
       >
+        <div className="system-message-log-wrap" ref={statusLogPanelRef}>
+          <button
+            type="button"
+            className={`system-message-log-btn${statusLogOpen ? ' active' : ''}`}
+            title="System message log"
+            aria-label="System message log"
+            aria-expanded={statusLogOpen}
+            aria-controls="system-message-log-panel"
+            onClick={() => setStatusLogOpen((v) => !v)}
+          >
+            <svg
+              className="system-message-log-icon"
+              viewBox="0 0 16 16"
+              width="14"
+              height="14"
+              aria-hidden="true"
+            >
+              <path
+                fill="currentColor"
+                d="M3 2.5A1.5 1.5 0 0 1 4.5 1h7A1.5 1.5 0 0 1 13 2.5v11A1.5 1.5 0 0 1 11.5 15h-7A1.5 1.5 0 0 1 3 13.5v-11Zm1.5-.5a.5.5 0 0 0-.5.5v11a.5.5 0 0 0 .5.5h7a.5.5 0 0 0 .5-.5v-11a.5.5 0 0 0-.5-.5h-7ZM5 4h6v1H5V4Zm0 2.5h6v1H5v-1Zm0 2.5h4v1H5V9Z"
+              />
+            </svg>
+          </button>
+          {statusLogOpen ? (
+            <div
+              id="system-message-log-panel"
+              className="system-message-log-panel"
+              role="dialog"
+              aria-label="System message log"
+            >
+              <div className="system-message-log-header">
+                <span>System message log</span>
+                <button
+                  type="button"
+                  className="system-message-log-close"
+                  onClick={() => setStatusLogOpen(false)}
+                >
+                  Close
+                </button>
+              </div>
+              {statusLog.length === 0 ? (
+                <p className="system-message-log-empty">No messages yet</p>
+              ) : (
+                <ul className="system-message-log-list" ref={statusLogListRef}>
+                  {statusLog.map((entry) => (
+                    <li
+                      key={entry.id}
+                      className={`system-message-log-item${entry.isError ? ' is-error' : ''}`}
+                    >
+                      <time
+                        className="system-message-log-time"
+                        dateTime={new Date(entry.at).toISOString()}
+                      >
+                        {formatStatusLogTime(entry.at)}
+                      </time>
+                      <span className="system-message-log-text">{entry.message}</span>
+                    </li>
+                  ))}
+                </ul>
+              )}
+            </div>
+          ) : null}
+        </div>
         <span
           className={`system-message-bar-text${status.isError ? ' is-error' : ''}${!status.message ? ' is-idle' : ''}`}
         >
-          {status.message || 'Ready'}
+          {status.message}
         </span>
       </footer>
     </div>
