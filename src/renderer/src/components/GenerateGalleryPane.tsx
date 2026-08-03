@@ -2,9 +2,9 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { basenamePath } from '../services/comfyWan22Loop'
 import { useArrowListNav, isTextEntryTarget } from '../hooks/useArrowListNav'
 import { ConfirmDialog } from './ConfirmDialog'
+import { GalleryVideoMetaBar } from './GalleryVideoMetaBar'
 import {
-  useSharedGenerateGallery,
-  type GalleryVideoMeta
+  useSharedGenerateGallery
 } from './SharedGenerateGalleryContext'
 
 interface Props {
@@ -13,27 +13,6 @@ interface Props {
   outputFolder: string
   onUseSeed: (seed: number) => void
   onStatus: (msg: string, isError?: boolean, options?: { sticky?: boolean }) => void
-}
-
-function formatFileSize(bytes: number): string {
-  if (bytes < 1024) return `${bytes} B`
-  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`
-  if (bytes < 1024 * 1024 * 1024) return `${(bytes / (1024 * 1024)).toFixed(1)} MB`
-  return `${(bytes / (1024 * 1024 * 1024)).toFixed(2)} GB`
-}
-
-function formatVideoMetaLine(meta: GalleryVideoMeta): string {
-  const parts: string[] = []
-  if (meta.seed != null) parts.push(`seed ${meta.seed}`)
-  if (meta.width && meta.height) parts.push(`${meta.width}×${meta.height}`)
-  if (meta.sizeBytes > 0) parts.push(formatFileSize(meta.sizeBytes))
-  if (meta.codec) {
-    parts.push(meta.codec)
-    if (meta.bitDepth) parts.push(`${meta.bitDepth}bit`)
-  } else if (meta.container) {
-    parts.push(meta.container)
-  }
-  return parts.join(' · ')
 }
 
 export function GenerateGalleryPane({
@@ -178,33 +157,11 @@ export function GenerateGalleryPane({
               }}
             />
             {videoMeta ? (
-              <div className="generate-video-meta">
-                <button
-                  type="button"
-                  className="generate-use-seed-btn"
-                  disabled={videoMeta.seed == null}
-                  title={
-                    videoMeta.seed != null
-                      ? `Copy seed ${videoMeta.seed} into Seed field`
-                      : 'No seed in filename'
-                  }
-                  onClick={() => {
-                    if (videoMeta.seed == null) return
-                    onUseSeed(videoMeta.seed)
-                    onStatus(`Seed set to ${videoMeta.seed}`)
-                  }}
-                >
-                  Use Seed
-                </button>
-                <div className="generate-video-meta-text">
-                  <div className="generate-video-meta-name" title={videoMeta.name}>
-                    {videoMeta.name}
-                  </div>
-                  <div className="generate-video-meta-details">
-                    {formatVideoMetaLine(videoMeta)}
-                  </div>
-                </div>
-              </div>
+              <GalleryVideoMetaBar
+                meta={videoMeta}
+                onUseSeed={onUseSeed}
+                onStatus={onStatus}
+              />
             ) : null}
           </>
         ) : (

@@ -62,7 +62,8 @@ export function createDefaultPromptPreset() {
   return {
     id: DEFAULT_PROMPT_PRESET_ID,
     name: 'Wan2.2 I2V Motion',
-    prompt: WAN_I2V_MOTION_PROMPT
+    prompt: WAN_I2V_MOTION_PROMPT,
+    fixedPrompt: ''
   }
 }
 
@@ -70,7 +71,8 @@ export function createDefaultNsfwPromptPreset() {
   return {
     id: DEFAULT_PROMPT_PRESET_NSFW_ID,
     name: 'Wan2.2 I2V Motion NSFW',
-    prompt: WAN_I2V_MOTION_NSFW_PROMPT
+    prompt: WAN_I2V_MOTION_NSFW_PROMPT,
+    fixedPrompt: ''
   }
 }
 

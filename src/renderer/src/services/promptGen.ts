@@ -76,11 +76,27 @@ export function extractFinalPrompt(raw: string): string {
   return text.trim()
 }
 
-function activePresetPrompt(settings: AppSettings): string {
-  const preset =
+function activePreset(settings: AppSettings) {
+  return (
     settings.promptPresets.find((p) => p.id === settings.activePromptPresetId) ??
     settings.promptPresets[0]
-  return preset?.prompt?.trim() ?? ''
+  )
+}
+
+function activePresetPrompt(settings: AppSettings): string {
+  return activePreset(settings)?.prompt?.trim() ?? ''
+}
+
+function activePresetFixedPrompt(settings: AppSettings): string {
+  return activePreset(settings)?.fixedPrompt?.trim() ?? ''
+}
+
+function withFixedPrompt(settings: AppSettings, generated: string): string {
+  const fixed = activePresetFixedPrompt(settings)
+  const text = generated.trim()
+  if (!fixed) return text
+  if (!text) return fixed
+  return `${fixed}\n${text}`
 }
 
 async function promptWithLmStudio(
@@ -226,16 +242,17 @@ ${note}
 
   try {
     const image = await window.api.readImageBase64(imagePath)
-    if (settings.provider === 'lmstudio') {
-      return await promptWithLmStudio(
-        settings,
-        fullPrompt,
-        image.mimeType,
-        image.base64,
-        signal
-      )
-    }
-    return await promptWithOllama(settings, fullPrompt, image.base64, signal)
+    const generated =
+      settings.provider === 'lmstudio'
+        ? await promptWithLmStudio(
+            settings,
+            fullPrompt,
+            image.mimeType,
+            image.base64,
+            signal
+          )
+        : await promptWithOllama(settings, fullPrompt, image.base64, signal)
+    return withFixedPrompt(settings, generated)
   } catch (err) {
     throw new Error(formatLocalAiError(err, settings))
   }

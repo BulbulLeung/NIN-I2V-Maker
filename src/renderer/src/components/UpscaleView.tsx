@@ -10,9 +10,19 @@ import { unloadLocalAiModels } from '../services/unloadLocalAi'
 import { isTextEntryTarget, useArrowListNav } from '../hooks/useArrowListNav'
 import { useBackdropDismiss } from '../hooks/useBackdropDismiss'
 import { ConfirmDialog } from './ConfirmDialog'
+import { GalleryVideoMetaBar } from './GalleryVideoMetaBar'
 import { ResourceMonitorPane } from './ResourceMonitorPane'
 import { SearchableSelect } from './SearchableSelect'
 import { uniqueDirs, useComfyUi } from './ComfyUiContext'
+import type { GalleryVideoMeta } from './SharedGenerateGalleryContext'
+import {
+  forgetCompareSource,
+  isUpscaleResultName,
+  loadCompareSourceMap,
+  lookupCompareSource,
+  rememberCompareSource,
+  resolveCompareSourcePath
+} from '../utils/galleryCompareSource'
 import {
   DEFAULT_RESOLUTION_PRESET,
   isResolutionPreset,
@@ -39,76 +49,7 @@ interface GalleryVideo {
 }
 
 function isUpscaleVideoName(name: string): boolean {
-  return /upscale/i.test(name)
-}
-
-function stripExt(name: string): string {
-  return name.replace(/\.[^.]+$/, '')
-}
-
-/** Gallery collision rename: `stem_1712345678901`. */
-function stripCollisionSuffix(stem: string): string {
-  return stem.replace(/_\d{10,}$/u, '')
-}
-
-function videoBaseName(name: string): string {
-  return stripCollisionSuffix(stripExt(name))
-}
-
-/** Strip trailing `_upscale` (and collision digits) to recover the source stem. */
-function sourceStemFromUpscaleName(name: string): string | null {
-  const base = videoBaseName(name)
-  if (/_upscale$/i.test(base)) return base.replace(/_upscale$/i, '')
-  return null
-}
-
-function resolveCompareSourcePath(
-  resultPath: string | null,
-  videos: GalleryVideo[],
-  selectedSourcePath: string,
-  rememberedPath?: string | null
-): string | null {
-  if (!resultPath) return null
-
-  const remembered = (rememberedPath || '').trim()
-  if (
-    remembered &&
-    remembered !== resultPath &&
-    !isUpscaleVideoName(basenamePath(remembered))
-  ) {
-    const listed = videos.some((v) => v.path === remembered)
-    const selected = selectedSourcePath.trim()
-    if (listed || remembered === selected || videos.length === 0) {
-      return remembered
-    }
-  }
-
-  const stem = sourceStemFromUpscaleName(basenamePath(resultPath))
-  if (stem) {
-    const match = videos.find((v) => {
-      if (v.path === resultPath) return false
-      if (isUpscaleVideoName(v.name)) return false
-      return videoBaseName(v.name) === stem
-    })
-    if (match) return match.path
-
-    const selected = selectedSourcePath.trim()
-    if (
-      selected &&
-      selected !== resultPath &&
-      !isUpscaleVideoName(basenamePath(selected)) &&
-      videoBaseName(basenamePath(selected)) === stem
-    ) {
-      return selected
-    }
-    return null
-  }
-
-  const selected = selectedSourcePath.trim()
-  if (selected && selected !== resultPath && !isUpscaleVideoName(basenamePath(selected))) {
-    return selected
-  }
-  return null
+  return isUpscaleResultName(name)
 }
 
 export function UpscaleView({
@@ -133,6 +74,7 @@ export function UpscaleView({
   const [sourceFrameCount, setSourceFrameCount] = useState<number | null>(null)
   const [videoSize, setVideoSize] = useState<{ width: number; height: number } | null>(null)
   const [resultVideoPath, setResultVideoPath] = useState<string | null>(null)
+  const [resultVideoMeta, setResultVideoMeta] = useState<GalleryVideoMeta | null>(null)
   const [confirmDeleteVideo, setConfirmDeleteVideo] = useState(false)
 
   const abortRef = useRef<AbortController | null>(null)
@@ -145,7 +87,7 @@ export function UpscaleView({
   const sourceVideoRef = useRef<HTMLVideoElement | null>(null)
   const resultVideoRef = useRef<HTMLVideoElement | null>(null)
   const syncLockRef = useRef(false)
-  const compareSourceByResultRef = useRef<Map<string, string>>(new Map())
+  const compareSourceByResultRef = useRef<Map<string, string>>(loadCompareSourceMap())
   const resultVideoPathRef = useRef(resultVideoPath)
   resultVideoPathRef.current = resultVideoPath
   const upscaleVideosRef = useRef<GalleryVideo[]>([])
@@ -196,7 +138,8 @@ export function UpscaleView({
         resultVideoPath,
         videos,
         draft.selectedVideoPath,
-        resultVideoPath ? compareSourceByResultRef.current.get(resultVideoPath) : undefined
+        'upscale',
+        resultVideoPath ? lookupCompareSource(compareSourceByResultRef.current, resultVideoPath) : undefined
       ),
     [resultVideoPath, videos, draft.selectedVideoPath]
   )
@@ -226,6 +169,48 @@ export function UpscaleView({
     void src?.play().catch(() => undefined)
     void res?.play().catch(() => undefined)
   }, [compareSourcePath, resultVideoPath])
+
+  useEffect(() => {
+    if (!resultVideoPath) {
+      setResultVideoMeta(null)
+      return
+    }
+    let cancelled = false
+    void (async () => {
+      try {
+        const res = await window.api.galleryProbeVideo({ path: resultVideoPath })
+        if (cancelled) return
+        if (res.ok && res.info) {
+          setResultVideoMeta({
+            name: res.info.name,
+            sizeBytes: res.info.sizeBytes,
+            width: res.info.width,
+            height: res.info.height,
+            codec: res.info.codec,
+            bitDepth: res.info.bitDepth,
+            container: res.info.container,
+            seed: res.info.seed ?? null
+          })
+        } else {
+          setResultVideoMeta({
+            name: basenamePath(resultVideoPath),
+            sizeBytes: 0,
+            width: null,
+            height: null,
+            codec: null,
+            bitDepth: null,
+            container: null,
+            seed: null
+          })
+        }
+      } catch {
+        if (!cancelled) setResultVideoMeta(null)
+      }
+    })()
+    return () => {
+      cancelled = true
+    }
+  }, [resultVideoPath])
 
   useEffect(() => {
     if (!active) return
@@ -375,7 +360,7 @@ export function UpscaleView({
       onStatus(res.error || 'Failed to move video to Recycle Bin', true)
       return
     }
-    compareSourceByResultRef.current.delete(path)
+    forgetCompareSource(compareSourceByResultRef.current, path)
     const list = upscaleVideosRef.current
     const idx = list.findIndex((v) => v.path === path)
     const nextList = list.filter((v) => v.path !== path)
@@ -562,7 +547,7 @@ export function UpscaleView({
         throw new Error(saved.error || 'Failed to save video to gallery')
       }
 
-      compareSourceByResultRef.current.set(saved.path, videoPath)
+      rememberCompareSource(compareSourceByResultRef.current, saved.path, videoPath)
       await refreshGallery()
       setResultVideoPath(saved.path)
 
@@ -868,6 +853,17 @@ export function UpscaleView({
                     onLoadedData={(e) => {
                       void e.currentTarget.play().catch(() => undefined)
                     }}
+                    onLoadedMetadata={(e) => {
+                      const el = e.currentTarget
+                      const w = el.videoWidth
+                      const h = el.videoHeight
+                      if (!w || !h) return
+                      setResultVideoMeta((prev) => {
+                        if (!prev) return prev
+                        if (prev.width && prev.height) return prev
+                        return { ...prev, width: w, height: h }
+                      })
+                    }}
                     onPlay={(e) => syncVideos(e.currentTarget, sourceVideoRef.current)}
                     onPause={(e) => syncVideos(e.currentTarget, sourceVideoRef.current)}
                     onSeeked={(e) => syncVideos(e.currentTarget, sourceVideoRef.current)}
@@ -890,6 +886,9 @@ export function UpscaleView({
                     : 'Choose an output folder in Settings'}
               </div>
             )}
+            {resultVideoPath && resultVideoMeta ? (
+              <GalleryVideoMetaBar meta={resultVideoMeta} onStatus={onStatus} />
+            ) : null}
           </div>
 
           <div className="i2v-gallery" ref={resultGalleryRef}>
@@ -908,10 +907,11 @@ export function UpscaleView({
                       v.path,
                       videos,
                       draftRef.current.selectedVideoPath,
-                      compareSourceByResultRef.current.get(v.path)
+                      'upscale',
+                      lookupCompareSource(compareSourceByResultRef.current, v.path)
                     )
                     if (src) {
-                      compareSourceByResultRef.current.set(v.path, src)
+                      rememberCompareSource(compareSourceByResultRef.current, v.path, src)
                       if (src !== draftRef.current.selectedVideoPath) {
                         patchDraft({ selectedVideoPath: src })
                       }

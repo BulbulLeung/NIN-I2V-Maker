@@ -1688,6 +1688,11 @@ button.danger.kbd-focus {
   font-size: 0.78rem;
 }
 
+.prompt-textarea-fixed {
+  min-height: 3.2rem;
+  height: 3.2rem;
+}
+
 .modal-text {
   margin: 0 0 1rem;
   color: var(--text-muted);

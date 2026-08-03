@@ -16,6 +16,8 @@ export interface PromptPreset {
   id: string
   name: string
   prompt: string
+  /** Prepended to the generated I2V prompt (fixed + newline + generated). */
+  fixedPrompt: string
 }
 
 export interface SharedComfyDraft {

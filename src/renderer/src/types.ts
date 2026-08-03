@@ -114,6 +114,8 @@ export interface PromptPreset {
   id: string
   name: string
   prompt: string
+  /** Prepended to the generated I2V prompt (fixed + newline + generated). */
+  fixedPrompt: string
 }
 
 export interface ImageItem {
@@ -221,10 +223,17 @@ export function normalizeSettings(
 ): AppSettings {
   const r = raw as Partial<AppSettings> & Record<string, unknown>
   const uiGpuMode = normalizeUiGpuMode(r.uiGpuMode ?? (r.disableUiGpu ? 'software' : 'auto'))
-  const presets = ensureBuiltinPromptPresets(
+  const presetsRaw =
     Array.isArray(r.promptPresets) && r.promptPresets.length > 0
       ? (r.promptPresets as PromptPreset[])
       : createDefaultPromptPresets()
+  const presets = ensureBuiltinPromptPresets(
+    presetsRaw.map((p) => ({
+      id: typeof p.id === 'string' ? p.id : `preset-${Math.random().toString(36).slice(2, 8)}`,
+      name: typeof p.name === 'string' ? p.name : 'Untitled preset',
+      prompt: typeof p.prompt === 'string' ? p.prompt : '',
+      fixedPrompt: typeof p.fixedPrompt === 'string' ? p.fixedPrompt : ''
+    }))
   )
   const activeId =
     typeof r.activePromptPresetId === 'string' &&

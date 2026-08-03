@@ -127,7 +127,8 @@ export function SettingsDialog({ settings, open, initialTab, onClose, onSave }: 
     const preset: PromptPreset = {
       id: newPresetId(),
       name: 'New preset',
-      prompt: ''
+      prompt: '',
+      fixedPrompt: ''
     }
     patch({
       promptPresets: [...settings.promptPresets, preset],
@@ -385,6 +386,12 @@ export function SettingsDialog({ settings, open, initialTab, onClose, onSave }: 
                       type="text"
                       value={activePreset.name}
                       onChange={(e) => updatePreset(activePreset.id, { name: e.target.value })}
+                    />
+                  </label>
+                  <label className="field">
+                    <span>Fixed prompt</span>
+                    <textarea
+                      className="prompt-textarea prompt-textarea-fixed"
                     />
                   </label>
                   <label className="field">

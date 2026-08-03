@@ -216,7 +216,7 @@ export type LegacyGenerateDraft = VideoGenerateParams &
   }
 
 export const WAN_DEFAULT_NEGATIVE =
-  'vivid colors, overexposed, static, blurry details, subtitles, stylized, artwork, painting, still image, overall grayish, worst quality, low quality, JPEG compression artifacts, ugly, incomplete, extra fingers, poorly drawn hands, poorly drawn face, deformed, disfigured, deformed limbs, fused fingers, still frame, cluttered background, three legs, crowded background, walking backwards'
+  'censored, mosaic censoring, bar censor, pixelated, glowing, bloom, blurry, out of focus, low detail, bad anatomy, ugly, overexposed, underexposed, distorted face, extra limbs, cartoonish, 3d render artifacts, duplicate people, unnatural lighting, bad composition, missing shadows, low resolution, poorly textured, glitch, noise, grain, static, motionless, still frame, stylized, artwork, painting, illustration, many people in background, three legs, walking backward, unnatural skin tone, discolored eyelid, red eyelids, closed eyes, poorly drawn hands, extra fingers, fused fingers, poorly drawn face, deformed, disfigured, malformed limbs, fog, mist, voluminous eyelashes,Photorealistic, Hyperrealistic, 3D render, Real life, Live action, static, talking, speaking,'
 
 export const DEFAULT_SHARED_COMFY: SharedComfyDraft = {
   comfyUiBatPath: '',
