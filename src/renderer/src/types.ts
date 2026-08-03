@@ -8,10 +8,12 @@ import {
   DEFAULT_I2V_GENERATE_DRAFT,
   DEFAULT_LOOP_GENERATE_DRAFT,
   DEFAULT_SHARED_COMFY,
+  DEFAULT_FACE_DETAILER_DRAFT,
   DEFAULT_UPSCALE_GENERATE_DRAFT,
   migrateGenerateSettings,
   normalizeActiveView,
   normalizeActiveViewAndPanel,
+  normalizeFaceDetailerDraft,
   normalizeFlf2vGenerateDraft,
   normalizeI2vGenerateDraft,
   normalizeSharedComfyDraft,
@@ -19,6 +21,7 @@ import {
   normalizeVideoGenPanel,
   pythonInstallPathFromDownloadFolder,
   type ActiveView,
+  type FaceDetailerDraft,
   type Flf2vGenerateDraft,
   type FlfMode,
   type I2vGenerateDraft,
@@ -37,6 +40,7 @@ import { join } from './utils/pathJoin'
 export type {
   ActiveView,
   ExtraLoraEntry,
+  FaceDetailerDraft,
   Flf2vGenerateDraft,
   FlfMode,
   I2vGenerateDraft,
@@ -50,6 +54,7 @@ export type {
   Wan22VideoMode
 }
 export {
+  DEFAULT_FACE_DETAILER_DRAFT,
   DEFAULT_FLF2V_GENERATE_DRAFT,
   DEFAULT_I2V_GENERATE_DRAFT,
   DEFAULT_LOOP_GENERATE_DRAFT,
@@ -65,6 +70,7 @@ export {
   migrateGenerateSettings,
   normalizeActiveView,
   normalizeActiveViewAndPanel,
+  normalizeFaceDetailerDraft,
   normalizeFlf2vGenerateDraft,
   normalizeI2vGenerateDraft,
   normalizeSharedComfyDraft,
@@ -166,6 +172,7 @@ export interface AppSettings {
   flf2vDraft: Flf2vGenerateDraft
   loopDraft: LoopGenerateDraft
   upscaleDraft: UpscaleGenerateDraft
+  faceDetailerDraft: FaceDetailerDraft
 }
 
 export const DEFAULT_SETTINGS: AppSettings = {
@@ -195,7 +202,8 @@ export const DEFAULT_SETTINGS: AppSettings = {
   i2vDraft: { ...DEFAULT_I2V_GENERATE_DRAFT },
   flf2vDraft: { ...DEFAULT_FLF2V_GENERATE_DRAFT },
   loopDraft: { ...DEFAULT_LOOP_GENERATE_DRAFT },
-  upscaleDraft: { ...DEFAULT_UPSCALE_GENERATE_DRAFT }
+  upscaleDraft: { ...DEFAULT_UPSCALE_GENERATE_DRAFT },
+  faceDetailerDraft: { ...DEFAULT_FACE_DETAILER_DRAFT }
 }
 
 function normalizeUiGpuMode(raw: unknown): UiGpuMode {
@@ -277,7 +285,8 @@ export function normalizeSettings(
     i2vDraft: migrated.i2vDraft,
     flf2vDraft: migrated.flf2vDraft,
     loopDraft: migrated.loopDraft,
-    upscaleDraft: migrated.upscaleDraft
+    upscaleDraft: migrated.upscaleDraft,
+    faceDetailerDraft: migrated.faceDetailerDraft
   }
 }
 

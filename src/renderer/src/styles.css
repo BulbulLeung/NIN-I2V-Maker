@@ -4492,6 +4492,64 @@ button.danger.kbd-focus {
   min-height: 0;
 }
 
+.face-compare-player {
+  padding-top: 0.5rem;
+}
+
+.face-compare-grid {
+  flex: 1 1 auto;
+  min-height: 0;
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 0.55rem;
+  align-items: stretch;
+}
+
+.face-compare-pane {
+  min-width: 0;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 0.3rem;
+}
+
+.face-compare-label {
+  flex: 0 0 auto;
+  font-size: 0.72rem;
+  color: var(--text-muted);
+  letter-spacing: 0.02em;
+  padding: 0 0.1rem;
+}
+
+.face-compare-pane video {
+  width: 100%;
+  flex: 1 1 auto;
+  min-height: 0;
+  max-height: 100%;
+  object-fit: contain;
+  background: #000;
+  border-radius: 4px;
+}
+
+.face-compare-missing {
+  flex: 1 1 auto;
+  min-height: 120px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  text-align: center;
+  padding: 0.75rem;
+  border-radius: 4px;
+  background: #0e1014;
+  border: 1px dashed #2a303c;
+}
+
+@media (max-width: 1100px) {
+  .face-compare-grid {
+    grid-template-columns: 1fr;
+  }
+}
+
 .generate-image-picker-modal {
   display: flex;
   flex-direction: column;

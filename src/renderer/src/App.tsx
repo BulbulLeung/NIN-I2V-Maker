@@ -9,6 +9,7 @@ import {
   type ImageItem,
   type LoopGenerateDraft,
   type SharedComfyDraft,
+  type FaceDetailerDraft,
   type UpscaleGenerateDraft,
   type VideoGenPanel
 } from './types'
@@ -20,6 +21,7 @@ import { PromptView } from './components/PromptView'
 import { SharedGenerateGalleryProvider } from './components/SharedGenerateGalleryContext'
 import { VideoGenView } from './components/VideoGenView'
 import { UpscaleView } from './components/UpscaleView'
+import { FaceDetailerView } from './components/FaceDetailerView'
 import { setLocalAiBlocked } from './services/localAiGate'
 import {
   firstIncompleteTab,
@@ -138,7 +140,10 @@ export function App() {
           : prev.loopDraft,
         upscaleDraft: partial.upscaleDraft
           ? { ...prev.upscaleDraft, ...partial.upscaleDraft }
-          : prev.upscaleDraft
+          : prev.upscaleDraft,
+        faceDetailerDraft: partial.faceDetailerDraft
+          ? { ...prev.faceDetailerDraft, ...partial.faceDetailerDraft }
+          : prev.faceDetailerDraft
       })
       if (persistTimer.current) clearTimeout(persistTimer.current)
       persistTimer.current = setTimeout(() => {
@@ -304,6 +309,10 @@ export function App() {
     persistSettings({ upscaleDraft })
   }
 
+  const onFaceDetailerDraftChange = (faceDetailerDraft: FaceDetailerDraft) => {
+    persistSettings({ faceDetailerDraft })
+  }
+
   const onPromptSourceChange = useCallback(
     (imagePath: string, promptText: string) => {
       persistSettings({ promptImagePath: imagePath, promptText })
@@ -427,6 +436,15 @@ export function App() {
             >
               Upscale
             </button>
+            <button
+              type="button"
+              role="tab"
+              className={`view-switch-seg${settings.activeView === 'faceDetailer' ? ' active' : ''}`}
+              aria-selected={settings.activeView === 'faceDetailer'}
+              onClick={() => setView('faceDetailer')}
+            >
+              Face
+            </button>
           </div>
           <ComfyUiToolbarControls locked={videoGenerating} />
         </div>
@@ -505,6 +523,24 @@ export function App() {
           draft={settings.upscaleDraft}
           onSharedComfyChange={onSharedComfyChange}
           onDraftChange={onUpscaleDraftChange}
+          onStatus={onStatus}
+          videoGenerating={videoGenerating}
+          onVideoGeneratingChange={onVideoGeneratingChange}
+        />
+      </div>
+
+      <div
+        className="app-view-slot"
+        style={{ display: settings.activeView === 'faceDetailer' ? undefined : 'none' }}
+        aria-hidden={settings.activeView !== 'faceDetailer'}
+      >
+        <FaceDetailerView
+          active={settings.activeView === 'faceDetailer'}
+          settings={settings}
+          sharedComfy={settings.sharedComfy}
+          draft={settings.faceDetailerDraft}
+          onSharedComfyChange={onSharedComfyChange}
+          onDraftChange={onFaceDetailerDraftChange}
           onStatus={onStatus}
           videoGenerating={videoGenerating}
           onVideoGeneratingChange={onVideoGeneratingChange}

@@ -8,7 +8,7 @@ export interface ImageItem {
 
 export type TranslationProvider = 'lmstudio' | 'ollama'
 export type UiGpuMode = 'auto' | 'software' | 'onboard'
-export type ActiveView = 'prompt' | 'videoGen' | 'upscale'
+export type ActiveView = 'prompt' | 'videoGen' | 'upscale' | 'faceDetailer'
 export type VideoGenPanel = 'i2v' | 'flf2v' | 'loop'
 export type FlfMode = 'flf2v' | 'wanfun_inpaint'
 
@@ -95,6 +95,28 @@ export interface UpscaleGenerateDraft {
   interpolationScale: number
 }
 
+export interface FaceDetailerDraft {
+  selectedVideoPath: string
+  lowDitPath: string
+  bboxModelName: string
+  upscaleModelPath: string
+  bboxThreshold: number
+  cropFactor: number
+  takeCount: number
+  minFaceWidth: number
+  feather: number
+  steps: number
+  startAtStep: number
+  endAtStep: number
+  cfg: number
+  sampler: string
+  scheduler: string
+  positive: string
+  negative: string
+  seed: number
+  shift: number
+}
+
 export interface AppSettings {
   provider: TranslationProvider
   lmStudioBaseUrl: string
@@ -123,6 +145,7 @@ export interface AppSettings {
   flf2vDraft: Flf2vGenerateDraft
   loopDraft: LoopGenerateDraft
   upscaleDraft: UpscaleGenerateDraft
+  faceDetailerDraft: FaceDetailerDraft
   windowWidth: number
   windowHeight: number
   windowX: number | null

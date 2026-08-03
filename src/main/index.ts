@@ -65,7 +65,7 @@ try {
 
 type TranslationProvider = 'lmstudio' | 'ollama'
 type UiGpuMode = 'auto' | 'software' | 'onboard'
-type ActiveView = 'prompt' | 'videoGen' | 'upscale'
+type ActiveView = 'prompt' | 'videoGen' | 'upscale' | 'faceDetailer'
 type VideoGenPanel = 'i2v' | 'flf2v' | 'loop'
 type FlfMode = 'flf2v' | 'wanfun_inpaint'
 
@@ -152,6 +152,28 @@ interface UpscaleGenerateDraft {
   interpolationScale: number
 }
 
+interface FaceDetailerDraft {
+  selectedVideoPath: string
+  lowDitPath: string
+  bboxModelName: string
+  upscaleModelPath: string
+  bboxThreshold: number
+  cropFactor: number
+  takeCount: number
+  minFaceWidth: number
+  feather: number
+  steps: number
+  startAtStep: number
+  endAtStep: number
+  cfg: number
+  sampler: string
+  scheduler: string
+  positive: string
+  negative: string
+  seed: number
+  shift: number
+}
+
 interface AppSettings {
   provider: TranslationProvider
   lmStudioBaseUrl: string
@@ -180,6 +202,7 @@ interface AppSettings {
   flf2vDraft: Flf2vGenerateDraft
   loopDraft: LoopGenerateDraft
   upscaleDraft: UpscaleGenerateDraft
+  faceDetailerDraft: FaceDetailerDraft
   windowWidth: number
   windowHeight: number
   windowX: number | null
@@ -285,6 +308,29 @@ const DEFAULT_UPSCALE_DRAFT: UpscaleGenerateDraft = {
   interpolationScale: 1
 }
 
+const DEFAULT_FACE_DETAILER_DRAFT: FaceDetailerDraft = {
+  selectedVideoPath: '',
+  lowDitPath: '',
+  bboxModelName: 'segm/99coins_anime_girl_face_m_seg.pt',
+  upscaleModelPath: '',
+  bboxThreshold: 0.65,
+  cropFactor: 1.1,
+  takeCount: 1,
+  minFaceWidth: 160,
+  feather: 50,
+  steps: 5,
+  startAtStep: 4,
+  endAtStep: 5,
+  cfg: 1,
+  sampler: 'euler_ancestral',
+  scheduler: 'sgm_uniform',
+  positive: '4k,',
+  negative:
+    'vivid colors, overexposed, static, blurry details, subtitles, stylized, artwork, painting, still image, overall grayish, worst quality, low quality, JPEG compression artifacts, ugly, incomplete, extra fingers, poorly drawn hands, poorly drawn face, deformed, disfigured, deformed limbs, fused fingers, still frame, cluttered background, three legs, crowded background, walking backwards',
+  seed: -1,
+  shift: 8
+}
+
 const DEFAULT_SETTINGS: AppSettings = {
   provider: 'lmstudio',
   lmStudioBaseUrl: 'http://localhost:1234/v1',
@@ -313,6 +359,7 @@ const DEFAULT_SETTINGS: AppSettings = {
   flf2vDraft: { ...DEFAULT_FLF2V_DRAFT },
   loopDraft: { ...DEFAULT_LOOP_DRAFT },
   upscaleDraft: { ...DEFAULT_UPSCALE_DRAFT },
+  faceDetailerDraft: { ...DEFAULT_FACE_DETAILER_DRAFT },
   windowWidth: DEFAULT_WINDOW.width,
   windowHeight: DEFAULT_WINDOW.height,
   windowX: null,
@@ -347,6 +394,7 @@ function normalizeActiveViewAndPanel(raw: unknown): {
   if (raw === 'loop') return { activeView: 'videoGen', videoGenPanel: 'loop' }
   if (raw === 'videoGen') return { activeView: 'videoGen', videoGenPanel: null }
   if (raw === 'upscale') return { activeView: 'upscale', videoGenPanel: null }
+  if (raw === 'faceDetailer') return { activeView: 'faceDetailer', videoGenPanel: null }
   return { activeView: 'prompt', videoGenPanel: null }
 }
 
@@ -569,6 +617,37 @@ function normalizeUpscaleDraft(raw: unknown): UpscaleGenerateDraft {
   }
 }
 
+function normalizeFaceDetailerDraft(raw: unknown): FaceDetailerDraft {
+  const o = raw && typeof raw === 'object' ? (raw as Record<string, unknown>) : {}
+  const d = DEFAULT_FACE_DETAILER_DRAFT
+  const clamp = (v: unknown, fallback: number, min: number, max: number) => {
+    const n = numField(v, fallback)
+    return Math.min(max, Math.max(min, n))
+  }
+  const seedRaw = numField(o.seed, d.seed)
+  return {
+    selectedVideoPath: strField(o.selectedVideoPath),
+    lowDitPath: strField(o.lowDitPath),
+    bboxModelName: strField(o.bboxModelName, d.bboxModelName) || d.bboxModelName,
+    upscaleModelPath: strField(o.upscaleModelPath),
+    bboxThreshold: clamp(o.bboxThreshold, d.bboxThreshold, 0.05, 1),
+    cropFactor: clamp(o.cropFactor, d.cropFactor, 1, 3),
+    takeCount: Math.max(1, Math.round(clamp(o.takeCount, d.takeCount, 1, 8))),
+    minFaceWidth: Math.max(8, Math.round(clamp(o.minFaceWidth, d.minFaceWidth, 8, 4096))),
+    feather: Math.max(0, Math.round(clamp(o.feather, d.feather, 0, 255))),
+    steps: Math.max(1, Math.round(clamp(o.steps, d.steps, 1, 50))),
+    startAtStep: Math.max(0, Math.round(clamp(o.startAtStep, d.startAtStep, 0, 100))),
+    endAtStep: Math.max(1, Math.round(clamp(o.endAtStep, d.endAtStep, 1, 1000))),
+    cfg: clamp(o.cfg, d.cfg, 0, 30),
+    sampler: strField(o.sampler, d.sampler) || d.sampler,
+    scheduler: strField(o.scheduler, d.scheduler) || d.scheduler,
+    positive: typeof o.positive === 'string' ? o.positive : d.positive,
+    negative: typeof o.negative === 'string' ? o.negative : d.negative,
+    seed: Number.isFinite(seedRaw) ? Math.floor(seedRaw) : d.seed,
+    shift: clamp(o.shift, d.shift, 0, 20)
+  }
+}
+
 /** Migrate legacy generateDraft into sharedComfy + i2vDraft + flf2vDraft + loopDraft. */
 function migrateGenerateSettings(parsed: Record<string, unknown>): {
   sharedComfy: SharedComfyDraft
@@ -576,6 +655,7 @@ function migrateGenerateSettings(parsed: Record<string, unknown>): {
   flf2vDraft: Flf2vGenerateDraft
   loopDraft: LoopGenerateDraft
   upscaleDraft: UpscaleGenerateDraft
+  faceDetailerDraft: FaceDetailerDraft
 } {
   const legacy = parsed.generateDraft
   const hasNew =
@@ -583,7 +663,8 @@ function migrateGenerateSettings(parsed: Record<string, unknown>): {
     parsed.i2vDraft != null ||
     parsed.flf2vDraft != null ||
     parsed.loopDraft != null ||
-    parsed.upscaleDraft != null
+    parsed.upscaleDraft != null ||
+    parsed.faceDetailerDraft != null
 
   if (hasNew) {
     const fromLegacy =
@@ -617,12 +698,17 @@ function migrateGenerateSettings(parsed: Record<string, unknown>): {
     if (!shared.frameInterpModelFolder.trim()) {
       shared.frameInterpModelFolder = parentDirOf(upscaleDraft.interpolationModelPath)
     }
+    const faceDetailerDraft = normalizeFaceDetailerDraft(parsed.faceDetailerDraft)
+    if (!shared.upscaleModelFolder.trim()) {
+      shared.upscaleModelFolder = parentDirOf(faceDetailerDraft.upscaleModelPath)
+    }
     return {
       sharedComfy: shared,
       i2vDraft,
       flf2vDraft: normalizeFlf2vDraft(parsed.flf2vDraft ?? legacy),
       loopDraft: normalizeLoopDraft(parsed.loopDraft ?? parsed.flf2vDraft ?? legacy),
-      upscaleDraft
+      upscaleDraft,
+      faceDetailerDraft
     }
   }
 
@@ -632,7 +718,8 @@ function migrateGenerateSettings(parsed: Record<string, unknown>): {
       i2vDraft: normalizeI2vDraft(legacy),
       flf2vDraft: normalizeFlf2vDraft(legacy),
       loopDraft: normalizeLoopDraft(legacy),
-      upscaleDraft: normalizeUpscaleDraft(parsed.upscaleDraft)
+      upscaleDraft: normalizeUpscaleDraft(parsed.upscaleDraft),
+      faceDetailerDraft: normalizeFaceDetailerDraft(parsed.faceDetailerDraft)
     }
   }
 
@@ -641,7 +728,8 @@ function migrateGenerateSettings(parsed: Record<string, unknown>): {
     i2vDraft: { ...DEFAULT_I2V_DRAFT },
     flf2vDraft: { ...DEFAULT_FLF2V_DRAFT },
     loopDraft: { ...DEFAULT_LOOP_DRAFT },
-    upscaleDraft: { ...DEFAULT_UPSCALE_DRAFT }
+    upscaleDraft: { ...DEFAULT_UPSCALE_DRAFT },
+    faceDetailerDraft: { ...DEFAULT_FACE_DETAILER_DRAFT }
   }
 }
 
@@ -705,7 +793,8 @@ async function loadSettings(): Promise<AppSettings> {
       i2vDraft: migrated.i2vDraft,
       flf2vDraft: migrated.flf2vDraft,
       loopDraft: migrated.loopDraft,
-      upscaleDraft: migrated.upscaleDraft
+      upscaleDraft: migrated.upscaleDraft,
+      faceDetailerDraft: migrated.faceDetailerDraft
     }
   } catch {
     return {
@@ -714,7 +803,8 @@ async function loadSettings(): Promise<AppSettings> {
       i2vDraft: { ...DEFAULT_I2V_DRAFT },
       flf2vDraft: { ...DEFAULT_FLF2V_DRAFT },
       loopDraft: { ...DEFAULT_LOOP_DRAFT },
-      upscaleDraft: { ...DEFAULT_UPSCALE_DRAFT }
+      upscaleDraft: { ...DEFAULT_UPSCALE_DRAFT },
+      faceDetailerDraft: { ...DEFAULT_FACE_DETAILER_DRAFT }
     }
   }
 }
@@ -1224,6 +1314,10 @@ app.whenReady().then(async () => {
       upscaleDraft: {
         ...migrated.upscaleDraft,
         ...(settings.upscaleDraft || {})
+      },
+      faceDetailerDraft: {
+        ...migrated.faceDetailerDraft,
+        ...(settings.faceDetailerDraft || {})
       },
       uiGpuMode,
       disableUiGpu: uiGpuMode === 'software',

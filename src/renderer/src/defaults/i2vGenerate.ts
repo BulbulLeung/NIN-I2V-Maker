@@ -4,7 +4,7 @@ import {
   isResolutionPreset
 } from '../utils/wanResolution'
 
-export type ActiveView = 'prompt' | 'videoGen' | 'upscale'
+export type ActiveView = 'prompt' | 'videoGen' | 'upscale' | 'faceDetailer'
 export type VideoGenPanel = 'i2v' | 'flf2v' | 'loop'
 export type FlfMode = 'flf2v' | 'wanfun_inpaint'
 export type Wan22VideoMode = 'i2v' | 'flf2v' | 'wanfun_inpaint'
@@ -56,6 +56,39 @@ export interface UpscaleGenerateDraft {
   interpolationScale: number
   /** After upscale + interpolation, drop the last frame before save. */
   removeLastFrame: boolean
+}
+
+/** Face Detailer post-process panel (Impact SEGS + Wan light denoise). */
+export interface FaceDetailerDraft {
+  selectedVideoPath: string
+  /** Low noise Wan DiT for face refine (independent of Video Gen). */
+  lowDitPath: string
+  /** Speed / Lightning LoRA for Low DiT (same fields as Video Gen low). */
+  loraLowPath: string
+  loraLowStrength: number
+  loraLowEnabled: boolean
+  /** UltralyticsDetectorProvider model_name (e.g. bbox/….pt). */
+  bboxModelName: string
+  /** Optional face-crop upscale (UpscaleModelLoader basename path). */
+  upscaleModelPath: string
+  bboxThreshold: number
+  cropFactor: number
+  takeCount: number
+  minFaceWidth: number
+  feather: number
+  steps: number
+  /** KSamplerAdvanced start_at_step (high / skip). End is always `steps`. */
+  startAtStep: number
+  /** Always kept equal to `steps` (locked end_at_step). */
+  endAtStep: number
+  cfg: number
+  sampler: string
+  scheduler: string
+  positive: string
+  negative: string
+  seed: number
+  /** ModelSamplingSD3 shift for Low DiT. */
+  shift: number
 }
 
 export type VideoSaveFormat = 'auto' | 'mp4' | 'webm' | 'mkv'
@@ -212,6 +245,31 @@ export const DEFAULT_UPSCALE_GENERATE_DRAFT: UpscaleGenerateDraft = {
   resolutionPreset: '540p',
   interpolationScale: 1,
   removeLastFrame: false
+}
+
+export const DEFAULT_FACE_DETAILER_DRAFT: FaceDetailerDraft = {
+  selectedVideoPath: '',
+  lowDitPath: '',
+  loraLowPath: '',
+  loraLowStrength: 0.8,
+  loraLowEnabled: true,
+  bboxModelName: 'segm/99coins_anime_girl_face_m_seg.pt',
+  upscaleModelPath: '',
+  bboxThreshold: 0.65,
+  cropFactor: 1.1,
+  takeCount: 1,
+  minFaceWidth: 160,
+  feather: 50,
+  steps: 5,
+  startAtStep: 4,
+  endAtStep: 5,
+  cfg: 1,
+  sampler: 'euler_ancestral',
+  scheduler: 'sgm_uniform',
+  positive: '4k,',
+  negative: WAN_DEFAULT_NEGATIVE,
+  seed: -1,
+  shift: 8
 }
 
 export const DEFAULT_VIDEO_PARAMS: VideoGenerateParams = {
@@ -448,6 +506,43 @@ export function normalizeUpscaleGenerateDraft(raw: unknown): UpscaleGenerateDraf
   }
 }
 
+export function normalizeFaceDetailerDraft(raw: unknown): FaceDetailerDraft {
+  const r = (raw && typeof raw === 'object' ? raw : {}) as Record<string, unknown>
+  const d = DEFAULT_FACE_DETAILER_DRAFT
+  const seedRaw = typeof r.seed === 'number' ? r.seed : Number(r.seed)
+  const seed = Number.isFinite(seedRaw) ? Math.floor(seedRaw) : d.seed
+  const steps = Math.max(1, Math.round(num(r.steps, d.steps, 1, 50)))
+  const startAtStep = Math.max(
+    0,
+    Math.min(steps - 1, Math.round(num(r.startAtStep, d.startAtStep, 0, 100)))
+  )
+  return {
+    selectedVideoPath: str(r.selectedVideoPath),
+    lowDitPath: str(r.lowDitPath),
+    loraLowPath: str(r.loraLowPath),
+    loraLowStrength: num(r.loraLowStrength, d.loraLowStrength, 0, 5),
+    loraLowEnabled:
+      typeof r.loraLowEnabled === 'boolean' ? r.loraLowEnabled : d.loraLowEnabled,
+    bboxModelName: str(r.bboxModelName) || d.bboxModelName,
+    upscaleModelPath: str(r.upscaleModelPath),
+    bboxThreshold: num(r.bboxThreshold, d.bboxThreshold, 0.05, 1),
+    cropFactor: num(r.cropFactor, d.cropFactor, 1, 3),
+    takeCount: Math.max(1, Math.round(num(r.takeCount, d.takeCount, 1, 8))),
+    minFaceWidth: Math.max(8, Math.round(num(r.minFaceWidth, d.minFaceWidth, 8, 4096))),
+    feather: Math.max(0, Math.round(num(r.feather, d.feather, 0, 255))),
+    steps,
+    startAtStep,
+    endAtStep: steps,
+    cfg: num(r.cfg, d.cfg, 0, 30),
+    sampler: str(r.sampler) || d.sampler,
+    scheduler: str(r.scheduler) || d.scheduler,
+    positive: typeof r.positive === 'string' ? r.positive : d.positive,
+    negative: typeof r.negative === 'string' ? r.negative : d.negative,
+    seed,
+    shift: num(r.shift, d.shift, 0, 20)
+  }
+}
+
 export function normalizeI2vGenerateDraft(raw: unknown): I2vGenerateDraft {
   return normalizeVideoParams(raw, DEFAULT_I2V_GENERATE_DRAFT)
 }
@@ -476,6 +571,7 @@ export function migrateGenerateSettings(raw: Record<string, unknown>): {
   flf2vDraft: Flf2vGenerateDraft
   loopDraft: LoopGenerateDraft
   upscaleDraft: UpscaleGenerateDraft
+  faceDetailerDraft: FaceDetailerDraft
 } {
   const legacy = raw.generateDraft
   const hasNew =
@@ -483,7 +579,8 @@ export function migrateGenerateSettings(raw: Record<string, unknown>): {
     raw.i2vDraft != null ||
     raw.flf2vDraft != null ||
     raw.loopDraft != null ||
-    raw.upscaleDraft != null
+    raw.upscaleDraft != null ||
+    raw.faceDetailerDraft != null
 
   if (hasNew) {
     const sharedFromLegacy =
@@ -522,12 +619,17 @@ export function migrateGenerateSettings(raw: Record<string, unknown>): {
     if (!shared.frameInterpModelFolder.trim()) {
       shared.frameInterpModelFolder = parentDir(upscaleDraft.interpolationModelPath)
     }
+    const faceDetailerDraft = normalizeFaceDetailerDraft(raw.faceDetailerDraft)
+    if (!shared.upscaleModelFolder.trim()) {
+      shared.upscaleModelFolder = parentDir(faceDetailerDraft.upscaleModelPath)
+    }
     return {
       sharedComfy: shared,
       i2vDraft,
       flf2vDraft: normalizeFlf2vGenerateDraft(raw.flf2vDraft ?? legacy),
       loopDraft: normalizeLoopGenerateDraft(raw.loopDraft ?? raw.flf2vDraft ?? legacy),
-      upscaleDraft
+      upscaleDraft,
+      faceDetailerDraft
     }
   }
 
@@ -537,7 +639,8 @@ export function migrateGenerateSettings(raw: Record<string, unknown>): {
       i2vDraft: normalizeI2vGenerateDraft(legacy),
       flf2vDraft: normalizeFlf2vGenerateDraft(legacy),
       loopDraft: normalizeLoopGenerateDraft(legacy),
-      upscaleDraft: normalizeUpscaleGenerateDraft(raw.upscaleDraft)
+      upscaleDraft: normalizeUpscaleGenerateDraft(raw.upscaleDraft),
+      faceDetailerDraft: normalizeFaceDetailerDraft(raw.faceDetailerDraft)
     }
   }
 
@@ -546,7 +649,8 @@ export function migrateGenerateSettings(raw: Record<string, unknown>): {
     i2vDraft: { ...DEFAULT_I2V_GENERATE_DRAFT },
     flf2vDraft: { ...DEFAULT_FLF2V_GENERATE_DRAFT },
     loopDraft: { ...DEFAULT_LOOP_GENERATE_DRAFT },
-    upscaleDraft: { ...DEFAULT_UPSCALE_GENERATE_DRAFT }
+    upscaleDraft: { ...DEFAULT_UPSCALE_GENERATE_DRAFT },
+    faceDetailerDraft: { ...DEFAULT_FACE_DETAILER_DRAFT }
   }
 }
 
@@ -567,6 +671,7 @@ export function normalizeActiveViewAndPanel(value: unknown): {
   if (value === 'loop') return { activeView: 'videoGen', videoGenPanel: 'loop' }
   if (value === 'videoGen') return { activeView: 'videoGen', videoGenPanel: null }
   if (value === 'upscale') return { activeView: 'upscale', videoGenPanel: null }
+  if (value === 'faceDetailer') return { activeView: 'faceDetailer', videoGenPanel: null }
   return { activeView: 'prompt', videoGenPanel: null }
 }
 

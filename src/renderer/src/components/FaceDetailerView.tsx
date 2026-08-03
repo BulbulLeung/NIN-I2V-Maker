@@ -1,31 +1,27 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
-import type { AppSettings, SharedComfyDraft, UpscaleGenerateDraft } from '../types'
+import type { AppSettings, FaceDetailerDraft, SharedComfyDraft } from '../types'
 import { basenamePath } from '../services/comfyI2v'
 import {
   COMFY_BASE_URL,
-  generateUpscaleWithComfy,
-  interruptComfyGeneration
-} from '../services/comfyUpscale'
+  generateFaceDetailerWithComfy,
+  interruptComfyGeneration,
+  probeFaceDetailerNodeCaps
+} from '../services/comfyFaceDetailer'
 import { unloadLocalAiModels } from '../services/unloadLocalAi'
 import { useArrowListNav } from '../hooks/useArrowListNav'
 import { useBackdropDismiss } from '../hooks/useBackdropDismiss'
 import { ResourceMonitorPane } from './ResourceMonitorPane'
 import { SearchableSelect } from './SearchableSelect'
 import { uniqueDirs, useComfyUi } from './ComfyUiContext'
-import {
-  DEFAULT_RESOLUTION_PRESET,
-  isResolutionPreset,
-  RESOLUTION_PRESET_OPTIONS,
-  resolveWanResolution
-} from '../utils/wanResolution'
+import { splitModelsByHighLow } from '../utils/highLowModelSplit'
 
 interface Props {
   active?: boolean
   settings: AppSettings
   sharedComfy: SharedComfyDraft
-  draft: UpscaleGenerateDraft
+  draft: FaceDetailerDraft
   onSharedComfyChange: (shared: SharedComfyDraft) => void
-  onDraftChange: (draft: UpscaleGenerateDraft) => void
+  onDraftChange: (draft: FaceDetailerDraft) => void
   onStatus: (msg: string, isError?: boolean, options?: { sticky?: boolean }) => void
   videoGenerating?: boolean
   onVideoGeneratingChange?: (generating: boolean) => void
@@ -37,8 +33,8 @@ interface GalleryVideo {
   mtimeMs: number
 }
 
-function isUpscaleVideoName(name: string): boolean {
-  return /upscale/i.test(name)
+function isFaceVideoName(name: string): boolean {
+  return /_face/i.test(name)
 }
 
 function stripExt(name: string): string {
@@ -54,10 +50,10 @@ function videoBaseName(name: string): string {
   return stripCollisionSuffix(stripExt(name))
 }
 
-/** Strip trailing `_upscale` (and collision digits) to recover the source stem. */
-function sourceStemFromUpscaleName(name: string): string | null {
+/** Strip trailing `_face` (and collision digits) to recover the source stem. */
+function sourceStemFromFaceName(name: string): string | null {
   const base = videoBaseName(name)
-  if (/_upscale$/i.test(base)) return base.replace(/_upscale$/i, '')
+  if (/_face$/i.test(base)) return base.replace(/_face$/i, '')
   return null
 }
 
@@ -73,7 +69,7 @@ function resolveCompareSourcePath(
   if (
     remembered &&
     remembered !== resultPath &&
-    !isUpscaleVideoName(basenamePath(remembered))
+    !isFaceVideoName(basenamePath(remembered))
   ) {
     const listed = videos.some((v) => v.path === remembered)
     const selected = selectedSourcePath.trim()
@@ -82,20 +78,21 @@ function resolveCompareSourcePath(
     }
   }
 
-  const stem = sourceStemFromUpscaleName(basenamePath(resultPath))
+  const stem = sourceStemFromFaceName(basenamePath(resultPath))
   if (stem) {
     const match = videos.find((v) => {
       if (v.path === resultPath) return false
-      if (isUpscaleVideoName(v.name)) return false
+      if (isFaceVideoName(v.name)) return false
       return videoBaseName(v.name) === stem
     })
     if (match) return match.path
 
+    // Only use left-panel selection when it matches this result's stem.
     const selected = selectedSourcePath.trim()
     if (
       selected &&
       selected !== resultPath &&
-      !isUpscaleVideoName(basenamePath(selected)) &&
+      !isFaceVideoName(basenamePath(selected)) &&
       videoBaseName(basenamePath(selected)) === stem
     ) {
       return selected
@@ -104,13 +101,13 @@ function resolveCompareSourcePath(
   }
 
   const selected = selectedSourcePath.trim()
-  if (selected && selected !== resultPath && !isUpscaleVideoName(basenamePath(selected))) {
+  if (selected && selected !== resultPath && !isFaceVideoName(basenamePath(selected))) {
     return selected
   }
   return null
 }
 
-export function UpscaleView({
+export function FaceDetailerView({
   active = true,
   settings,
   sharedComfy,
@@ -125,12 +122,13 @@ export function UpscaleView({
   const [videos, setVideos] = useState<GalleryVideo[]>([])
   const [videoPickerOpen, setVideoPickerOpen] = useState(false)
   const [upscaleModels, setUpscaleModels] = useState<{ name: string; path: string }[]>([])
-  const [interpModels, setInterpModels] = useState<{ name: string; path: string }[]>([])
+  const [ditModels, setDitModels] = useState<{ name: string; path: string }[]>([])
+  const [speedLoraModels, setSpeedLoraModels] = useState<{ name: string; path: string }[]>([])
+  const [bboxModels, setBboxModels] = useState<string[]>([])
   const [generating, setGenerating] = useState(false)
   const [generateElapsedSec, setGenerateElapsedSec] = useState(0)
   const [sourceFps, setSourceFps] = useState(16)
   const [sourceFrameCount, setSourceFrameCount] = useState<number | null>(null)
-  const [videoSize, setVideoSize] = useState<{ width: number; height: number } | null>(null)
   const [resultVideoPath, setResultVideoPath] = useState<string | null>(null)
 
   const abortRef = useRef<AbortController | null>(null)
@@ -146,7 +144,7 @@ export function UpscaleView({
   const compareSourceByResultRef = useRef<Map<string, string>>(new Map())
 
   const patchDraft = useCallback(
-    (partial: Partial<UpscaleGenerateDraft>) => {
+    (partial: Partial<FaceDetailerDraft>) => {
       onDraftChange({ ...draftRef.current, ...partial })
     },
     [onDraftChange]
@@ -169,20 +167,17 @@ export function UpscaleView({
         return
       }
       setVideos(res.videos)
-      const upscaleList = res.videos.filter((v) => isUpscaleVideoName(v.name))
+      const faceList = res.videos.filter((v) => isFaceVideoName(v.name))
       setResultVideoPath((prev) => {
-        if (prev && upscaleList.some((v) => v.path === prev)) return prev
-        return upscaleList[0]?.path ?? null
+        if (prev && faceList.some((v) => v.path === prev)) return prev
+        return faceList[0]?.path ?? null
       })
     } catch {
       setVideos([])
     }
   }, [])
 
-  const upscaleVideos = useMemo(
-    () => videos.filter((v) => isUpscaleVideoName(v.name)),
-    [videos]
-  )
+  const faceVideos = useMemo(() => videos.filter((v) => isFaceVideoName(v.name)), [videos])
 
   const compareSourcePath = useMemo(
     () =>
@@ -231,7 +226,6 @@ export function UpscaleView({
     if (!path) {
       setSourceFps(16)
       setSourceFrameCount(null)
-      setVideoSize(null)
       return
     }
     let cancelled = false
@@ -251,18 +245,10 @@ export function UpscaleView({
         } else {
           setSourceFrameCount(null)
         }
-        const w = res.ok ? res.info?.width : null
-        const h = res.ok ? res.info?.height : null
-        if (typeof w === 'number' && w > 0 && typeof h === 'number' && h > 0) {
-          setVideoSize({ width: w, height: h })
-        } else {
-          setVideoSize(null)
-        }
       } catch {
         if (!cancelled) {
           setSourceFps(16)
           setSourceFrameCount(null)
-          setVideoSize(null)
         }
       }
     })()
@@ -287,22 +273,70 @@ export function UpscaleView({
   }, [sharedComfy.upscaleModelFolder])
 
   useEffect(() => {
-    const folder = sharedComfy.frameInterpModelFolder.trim()
+    const folder = sharedComfy.ditModelFolder.trim()
     if (!folder) {
-      setInterpModels([])
+      setDitModels([])
       return
     }
     let cancelled = false
     void window.api.listModelFiles(folder).then((files) => {
-      if (!cancelled) setInterpModels(files)
+      if (!cancelled) setDitModels(files)
     })
     return () => {
       cancelled = true
     }
-  }, [sharedComfy.frameInterpModelFolder])
+  }, [sharedComfy.ditModelFolder])
+
+  useEffect(() => {
+    const folder = sharedComfy.speedLoraFolder.trim()
+    if (!folder) {
+      setSpeedLoraModels([])
+      return
+    }
+    let cancelled = false
+    void window.api.listModelFiles(folder).then((files) => {
+      if (!cancelled) setSpeedLoraModels(files)
+    })
+    return () => {
+      cancelled = true
+    }
+  }, [sharedComfy.speedLoraFolder])
+
+  useEffect(() => {
+    if (!active) return
+    let cancelled = false
+    void (async () => {
+      try {
+        const caps = await probeFaceDetailerNodeCaps(COMFY_BASE_URL)
+        if (cancelled) return
+        setBboxModels(caps.bboxModelOptions)
+        if (
+          caps.bboxModelOptions.length > 0 &&
+          draftRef.current.bboxModelName &&
+          !caps.bboxModelOptions.includes(draftRef.current.bboxModelName)
+        ) {
+          const preferred =
+            caps.bboxModelOptions.find((n) => /face/i.test(n) && /anime|99coins/i.test(n)) ||
+            caps.bboxModelOptions.find((n) => /face/i.test(n)) ||
+            caps.bboxModelOptions[0]
+          if (preferred) patchDraft({ bboxModelName: preferred })
+        }
+      } catch {
+        if (!cancelled) setBboxModels([])
+      }
+    })()
+    return () => {
+      cancelled = true
+    }
+  }, [active, patchDraft])
 
   const videoPaths = useMemo(() => videos.map((v) => v.path), [videos])
-  const upscaleVideoPaths = useMemo(() => upscaleVideos.map((v) => v.path), [upscaleVideos])
+  const faceVideoPaths = useMemo(() => faceVideos.map((v) => v.path), [faceVideos])
+  const ditModelsBySide = useMemo(() => splitModelsByHighLow(ditModels), [ditModels])
+  const speedLoraModelsBySide = useMemo(
+    () => splitModelsByHighLow(speedLoraModels),
+    [speedLoraModels]
+  )
 
   useArrowListNav({
     enabled: active && videoPickerOpen && videoPaths.length > 0,
@@ -318,8 +352,8 @@ export function UpscaleView({
   })
 
   useArrowListNav({
-    enabled: active && !videoPickerOpen && !generating && upscaleVideoPaths.length > 0,
-    items: upscaleVideoPaths,
+    enabled: active && !videoPickerOpen && !generating && faceVideoPaths.length > 0,
+    items: faceVideoPaths,
     selectedId: resultVideoPath,
     onSelect: (id) => setResultVideoPath(id),
     columns: 1,
@@ -341,22 +375,19 @@ export function UpscaleView({
     return () => window.removeEventListener('keydown', onKey)
   }, [active, videoPickerOpen])
 
-  const ensureOnlineForUpscale = async (): Promise<boolean> => {
+  const ensureOnlineForFace = async (): Promise<boolean> => {
     const s = sharedRef.current
+    const d = draftRef.current
     return ensureComfyOnline({
-      ditFolders: uniqueDirs([s.highDitPath, s.lowDitPath], [s.ditModelFolder]),
+      ditFolders: uniqueDirs([d.lowDitPath], [s.ditModelFolder]),
       vaeFolders: uniqueDirs([s.vaePath]),
       clipFolders: uniqueDirs([s.clipPath]),
-      loraFolders: uniqueDirs([], [s.speedLoraFolder, s.wan22LoraFolder]),
-      upscaleFolders: uniqueDirs([draftRef.current.upscaleModelPath], [s.upscaleModelFolder]),
-      frameInterpFolders: uniqueDirs(
-        [draftRef.current.interpolationModelPath],
-        [s.frameInterpModelFolder]
-      )
+      loraFolders: uniqueDirs([d.loraLowPath], [s.speedLoraFolder, s.wan22LoraFolder]),
+      upscaleFolders: uniqueDirs([d.upscaleModelPath], [s.upscaleModelFolder])
     })
   }
 
-  const abortUpscale = async () => {
+  const abortFace = async () => {
     abortRef.current?.abort()
     try {
       await interruptComfyGeneration(COMFY_BASE_URL)
@@ -365,28 +396,21 @@ export function UpscaleView({
     }
   }
 
-  const runUpscale = async () => {
+  const runFaceDetailer = async () => {
     const s = sharedRef.current
     const d = draftRef.current
     const videoPath = d.selectedVideoPath.trim()
-    const resolutionPreset = isResolutionPreset(d.resolutionPreset)
-      ? d.resolutionPreset
-      : DEFAULT_RESOLUTION_PRESET
-    const interpolationScale = Math.max(1, Math.round(d.interpolationScale))
-    const aspectW = videoSize?.width || 544
-    const aspectH = videoSize?.height || 960
-    const { width: targetWidth, height: targetHeight } = resolveWanResolution({
-      resolutionPreset,
-      aspectW,
-      aspectH
-    })
 
     if (!videoPath) {
-      onStatus('Choose a video to upscale', true)
+      onStatus('Choose a video for Face Detailer', true)
       return
     }
     if (!s.outputFolder.trim()) {
       onStatus('Set Output folder in Settings → ComfyUI', true)
+      return
+    }
+    if (!d.lowDitPath.trim() || !s.vaePath.trim() || !s.clipPath.trim()) {
+      onStatus('Set Low noise DiT here, and VAE / CLIP in Settings → ComfyUI', true)
       return
     }
 
@@ -394,8 +418,8 @@ export function UpscaleView({
       onStatus(detail, false, { sticky: true })
     }
 
-    report('Checking ComfyUI online (Upscale)…')
-    const online = await ensureOnlineForUpscale()
+    report('Checking ComfyUI online (Face Detailer)…')
+    const online = await ensureOnlineForFace()
     if (!online) return
 
     abortRef.current?.abort()
@@ -443,25 +467,40 @@ export function UpscaleView({
         baseUrl: COMFY_BASE_URL
       })
 
+      const speedLowOn = Boolean(d.loraLowEnabled && d.loraLowPath.trim())
       report(
-        `ComfyUI upscale: ${resolutionPreset} → ${targetWidth}×${targetHeight}, interp ${interpolationScale}, fps ${sourceFps}`
+        `ComfyUI Face Detailer: thresh ${d.bboxThreshold}, steps ${d.steps} (denoise start at ${d.startAtStep}), fps ${sourceFps}`
       )
-      const result = await generateUpscaleWithComfy(
+      const result = await generateFaceDetailerWithComfy(
         {
           uploadedVideoName: uploaded.name,
           uploadedVideoSubfolder: uploaded.subfolder,
+          lowDitName: basenamePath(d.lowDitPath),
+          loraLowName: speedLowOn ? basenamePath(d.loraLowPath) : undefined,
+          loraLowStrength: d.loraLowStrength,
+          vaeName: basenamePath(s.vaePath),
+          clipName: basenamePath(s.clipPath),
+          bboxModelName: d.bboxModelName.trim(),
           upscaleModelName: d.upscaleModelPath.trim()
             ? basenamePath(d.upscaleModelPath)
             : undefined,
-          targetWidth,
-          targetHeight,
-          interpolationScale,
-          interpolationModelName: d.interpolationModelPath.trim()
-            ? basenamePath(d.interpolationModelPath)
-            : undefined,
+          bboxThreshold: d.bboxThreshold,
+          cropFactor: d.cropFactor,
+          takeCount: d.takeCount,
+          minFaceWidth: d.minFaceWidth,
+          feather: d.feather,
+          steps: d.steps,
+          startAtStep: d.startAtStep,
+          endAtStep: d.steps,
+          cfg: d.cfg,
+          sampler: d.sampler,
+          scheduler: d.scheduler,
+          positive: d.positive,
+          negative: d.negative,
+          seed: d.seed,
+          shift: d.shift,
           fps: sourceFps,
-          removeLastFrame: Boolean(d.removeLastFrame),
-          savePrefix: 'upscale/Wan2.2',
+          savePrefix: 'face/Wan2.2',
           videoFormat: s.videoFormat,
           videoCodec: s.videoCodec,
           videoBitDepth: s.videoBitDepth,
@@ -496,11 +535,11 @@ export function UpscaleView({
       const sourceName = basenamePath(videoPath)
       const dot = sourceName.lastIndexOf('.')
       const sourceStem = dot > 0 ? sourceName.slice(0, dot) : sourceName
-      const upscaleBase = /_upscale$/i.test(sourceStem) ? sourceStem : `${sourceStem}_upscale`
+      const faceBase = /_face$/i.test(sourceStem) ? sourceStem : `${sourceStem}_face`
       const saved = await window.api.gallerySaveVideo({
         sourcePath: resolved.path,
         outputFolder: s.outputFolder.trim(),
-        fileName: upscaleBase
+        fileName: faceBase
       })
       if (!saved.ok || !saved.path) {
         throw new Error(saved.error || 'Failed to save video to gallery')
@@ -511,15 +550,11 @@ export function UpscaleView({
       setResultVideoPath(saved.path)
 
       const elapsed = formatElapsed(Date.now() - startedAt)
-      onStatus(
-        `Done — ${resolutionPreset} ${targetWidth}×${targetHeight}, Interp ×${interpolationScale}, ${elapsed}`,
-        false,
-        { sticky: true }
-      )
+      onStatus(`Done — Face Detailer, ${elapsed}`, false, { sticky: true })
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err)
-      if (msg === 'Upscale cancelled' || msg === 'Generation cancelled') {
-        onStatus('Upscale cancelled')
+      if (msg === 'Face Detailer cancelled' || msg === 'Generation cancelled') {
+        onStatus('Face Detailer cancelled')
         return
       }
       onStatus(msg, true)
@@ -541,23 +576,49 @@ export function UpscaleView({
           mtimeMs: 0
         }
       : undefined)
+
   const modelFolder = sharedComfy.upscaleModelFolder.trim()
   const modelValue = draft.upscaleModelPath
   const modelKnown = upscaleModels.some((m) => m.path === modelValue)
   const modelOptions = [
+    { value: '', label: '(none — skip face crop upscale)' },
     ...(!modelKnown && modelValue
       ? [{ value: modelValue, label: `${basenamePath(modelValue)} (not in folder)` }]
       : []),
     ...upscaleModels.map((m) => ({ value: m.path, label: m.name }))
   ]
-  const interpFolder = sharedComfy.frameInterpModelFolder.trim()
-  const interpValue = draft.interpolationModelPath
-  const interpKnown = interpModels.some((m) => m.path === interpValue)
-  const interpOptions = [
-    ...(!interpKnown && interpValue
-      ? [{ value: interpValue, label: `${basenamePath(interpValue)} (not in folder)` }]
+
+  const ditFolder = sharedComfy.ditModelFolder.trim()
+  const lowDitValue = draft.lowDitPath
+  const lowDitKnown = ditModelsBySide.low.some((m) => m.path === lowDitValue)
+  const lowDitOptions = [
+    ...(!lowDitKnown && lowDitValue
+      ? [{ value: lowDitValue, label: `${basenamePath(lowDitValue)} (not in folder)` }]
       : []),
-    ...interpModels.map((m) => ({ value: m.path, label: m.name }))
+    ...ditModelsBySide.low.map((m) => ({ value: m.path, label: m.name }))
+  ]
+
+  const speedLowEnabled = Boolean(draft.loraLowEnabled)
+  const speedLowValue = draft.loraLowPath
+  const speedLowKnown = speedLoraModelsBySide.low.some((m) => m.path === speedLowValue)
+  const speedLowOptions = [
+    ...(!speedLowKnown && speedLowValue
+      ? [{ value: speedLowValue, label: `${basenamePath(speedLowValue)} (not in folder)` }]
+      : []),
+    ...speedLoraModelsBySide.low.map((m) => ({ value: m.path, label: m.name }))
+  ]
+
+  const stepsValue = Math.max(1, Math.round(Number(draft.steps) || 1))
+  const startAtValue = Math.min(
+    Math.max(0, stepsValue - 1),
+    Math.max(0, Math.round(Number(draft.startAtStep) || 0))
+  )
+
+  const bboxOptions = [
+    ...(draft.bboxModelName && !bboxModels.includes(draft.bboxModelName)
+      ? [{ value: draft.bboxModelName, label: `${draft.bboxModelName} (not listed)` }]
+      : []),
+    ...bboxModels.map((n) => ({ value: n, label: n }))
   ]
 
   return (
@@ -603,117 +664,240 @@ export function UpscaleView({
                 )}
                 <p className="field-hint">
                   {basenamePath(draft.selectedVideoPath) || 'No video selected'}
+                  {sourceFrameCount != null ? ` · ${sourceFrameCount} frames · ${sourceFps} fps` : ''}
                 </p>
               </div>
 
               <label className="field">
-                <span>Upscale model</span>
+                <span>Low noise DiT</span>
                 <SearchableSelect
-                  value={modelKnown ? modelValue : modelValue ? modelValue : ''}
+                  value={lowDitKnown ? lowDitValue : lowDitValue ? lowDitValue : ''}
+                  options={lowDitOptions}
+                  disabled={!ditFolder || ditModels.length === 0}
+                  placeholder={
+                    !ditFolder
+                      ? 'Set DiT model folder in Settings'
+                      : ditModels.length === 0
+                        ? 'No models in folder'
+                        : 'Select Low DiT…'
+                  }
+                  onChange={(next) => patchDraft({ lowDitPath: next })}
+                />
+              </label>
+
+              <label className="field">
+                <span>Speed LoRA (low)</span>
+                <div className={`generate-speed-lora-row${speedLowEnabled ? '' : ' is-off'}`}>
+                  <button
+                    type="button"
+                    className={`lora-switch${speedLowEnabled ? ' is-on' : ''}`}
+                    role="switch"
+                    aria-checked={speedLowEnabled}
+                    aria-label="Speed LoRA (low) on/off"
+                    title={speedLowEnabled ? 'On' : 'Off'}
+                    onClick={() => patchDraft({ loraLowEnabled: !speedLowEnabled })}
+                  >
+                    <span className="lora-switch-knob" />
+                  </button>
+                  <SearchableSelect
+                    value={speedLowKnown ? speedLowValue : speedLowValue ? speedLowValue : ''}
+                    options={speedLowOptions}
+                    emptyLabel="-NONE-"
+                    placeholder="-NONE-"
+                    disabled={!speedLowEnabled}
+                    onChange={(next) => patchDraft({ loraLowPath: next })}
+                  />
+                  <input
+                    type="number"
+                    className="generate-speed-lora-weight"
+                    value={Number(draft.loraLowStrength)}
+                    step={0.05}
+                    min={0}
+                    max={5}
+                    title="Weight"
+                    disabled={!speedLowEnabled || !speedLowValue}
+                    onChange={(e) => patchDraft({ loraLowStrength: Number(e.target.value) })}
+                  />
+                </div>
+              </label>
+              {!sharedComfy.speedLoraFolder.trim() ? (
+                <p className="field-hint">Set Speed LoRA folder in Settings to list models.</p>
+              ) : null}
+
+              <label className="field">
+                <span>Face detector (YOLO)</span>
+                <SearchableSelect
+                  value={draft.bboxModelName}
+                  options={bboxOptions}
+                  disabled={bboxOptions.length === 0}
+                  placeholder={
+                    bboxOptions.length === 0
+                      ? 'Start ComfyUI to list ultralytics models…'
+                      : 'Select bbox model…'
+                  }
+                  onChange={(next) => patchDraft({ bboxModelName: next })}
+                />
+              </label>
+
+              <label className="field">
+                <span>Face crop upscale model</span>
+                <SearchableSelect
+                  value={modelKnown || !modelValue ? modelValue : modelValue}
                   options={modelOptions}
-                  disabled={!modelFolder || upscaleModels.length === 0}
+                  disabled={false}
                   placeholder={
                     !modelFolder
-                      ? 'Set Upscale model folder in Settings'
-                      : upscaleModels.length === 0
-                        ? 'No models in folder'
-                        : 'Select upscale model…'
+                      ? 'Optional — set Upscale model folder in Settings'
+                      : 'Optional face crop upscale…'
                   }
                   onChange={(next) => patchDraft({ upscaleModelPath: next })}
                 />
               </label>
 
               <label className="field">
-                <span>Upscale Resolution</span>
-                <select
-                  value={
-                    isResolutionPreset(draft.resolutionPreset)
-                      ? draft.resolutionPreset
-                      : DEFAULT_RESOLUTION_PRESET
-                  }
-                  onChange={(e) => patchDraft({ resolutionPreset: e.target.value })}
-                >
-                  {RESOLUTION_PRESET_OPTIONS.map((p) => (
-                    <option key={p} value={p}>
-                      {p}
-                    </option>
-                  ))}
-                </select>
-                <p className="field-hint">
-                  {(() => {
-                    const preset = isResolutionPreset(draft.resolutionPreset)
-                      ? draft.resolutionPreset
-                      : DEFAULT_RESOLUTION_PRESET
-                    const curW = videoSize?.width
-                    const curH = videoSize?.height
-                    const { width, height } = resolveWanResolution({
-                      resolutionPreset: preset,
-                      aspectW: curW || 544,
-                      aspectH: curH || 960
-                    })
-                    const from =
-                      curW && curH ? `${curW}×${curH}` : draft.selectedVideoPath.trim() ? '…' : '—'
-                    return `${from} > ${width}×${height}`
-                  })()}
-                </p>
-              </label>
-
-              <label className="field">
-                <span>Interpolation model</span>
-                <SearchableSelect
-                  value={interpKnown ? interpValue : interpValue ? interpValue : ''}
-                  options={interpOptions}
-                  disabled={!interpFolder || interpModels.length === 0}
-                  placeholder={
-                    !interpFolder
-                      ? 'Set Frame Interpolation model folder in Settings'
-                      : interpModels.length === 0
-                        ? 'No models in folder'
-                        : 'Select interpolation model…'
-                  }
-                  onChange={(next) => patchDraft({ interpolationModelPath: next })}
+                <span>BBox threshold</span>
+                <input
+                  type="number"
+                  min={0.05}
+                  max={1}
+                  step={0.05}
+                  value={draft.bboxThreshold}
+                  onChange={(e) => patchDraft({ bboxThreshold: Number(e.target.value) })}
                 />
               </label>
 
               <label className="field">
-                <span>Interpolation scale</span>
+                <span>Crop factor</span>
                 <input
                   type="number"
                   min={1}
-                  max={16}
-                  step={1}
-                  value={draft.interpolationScale}
-                  onChange={(e) => patchDraft({ interpolationScale: Number(e.target.value) })}
+                  max={3}
+                  step={0.05}
+                  value={draft.cropFactor}
+                  onChange={(e) => patchDraft({ cropFactor: Number(e.target.value) })}
                 />
-                <p className="field-hint">
-                  {(() => {
-                    const scale = Math.max(1, Math.round(Number(draft.interpolationScale) || 1))
-                    if (!draft.selectedVideoPath.trim()) return '— > — frames'
-                    if (sourceFrameCount == null || sourceFrameCount <= 0) {
-                      return `… > … frames`
-                    }
-                    let to = Math.max(1, sourceFrameCount * scale)
-                    if (draft.removeLastFrame && to > 1) to -= 1
-                    return `${sourceFrameCount} > ${to} frames`
-                  })()}
-                </p>
               </label>
 
-              <div
-                className={`generate-aspect-toggle lora-toggle${draft.removeLastFrame ? ' is-on' : ''}`}
-              >
-                <span className="lora-toggle-label">Remove last frame</span>
-                <button
-                  type="button"
-                  className="lora-switch"
-                  role="switch"
-                  aria-checked={draft.removeLastFrame}
-                  aria-label="Remove last frame"
-                  onClick={() => patchDraft({ removeLastFrame: !draft.removeLastFrame })}
-                >
-                  <span className="lora-switch-knob" />
-                </button>
+              <label className="field">
+                <span>Max faces</span>
+                <input
+                  type="number"
+                  min={1}
+                  max={8}
+                  step={1}
+                  value={draft.takeCount}
+                  onChange={(e) => patchDraft({ takeCount: Number(e.target.value) })}
+                />
+              </label>
+
+              <label className="field">
+                <span>Min face width</span>
+                <input
+                  type="number"
+                  min={8}
+                  max={4096}
+                  step={1}
+                  value={draft.minFaceWidth}
+                  onChange={(e) => patchDraft({ minFaceWidth: Number(e.target.value) })}
+                />
+              </label>
+
+              <label className="field">
+                <span>Paste feather</span>
+                <input
+                  type="number"
+                  min={0}
+                  max={255}
+                  step={1}
+                  value={draft.feather}
+                  onChange={(e) => patchDraft({ feather: Number(e.target.value) })}
+                />
+              </label>
+
+              <div className="generate-steps-refiner-row">
+                <label className="field generate-steps-field">
+                  <span>Steps</span>
+                  <input
+                    type="number"
+                    min={1}
+                    max={50}
+                    step={1}
+                    disabled={generating}
+                    value={stepsValue}
+                    onChange={(e) => {
+                      const steps = Math.min(
+                        50,
+                        Math.max(1, Math.round(Number(e.target.value)) || 1)
+                      )
+                      const startAtStep = Math.min(
+                        Math.max(0, steps - 1),
+                        Math.max(0, Math.round(Number(draft.startAtStep) || 0))
+                      )
+                      patchDraft({ steps, startAtStep, endAtStep: steps })
+                    }}
+                  />
+                </label>
+                <label className="field generate-refiner-field">
+                  <span>{`denoise start at ${startAtValue} steps`}</span>
+                  <input
+                    type="range"
+                    min={0}
+                    max={Math.max(0, stepsValue - 1)}
+                    step={1}
+                    disabled={generating || stepsValue <= 1}
+                    value={startAtValue}
+                    onChange={(e) => {
+                      const n = Math.round(Number(e.target.value))
+                      const startAtStep = Math.min(
+                        Math.max(0, stepsValue - 1),
+                        Math.max(0, n)
+                      )
+                      patchDraft({ startAtStep, endAtStep: stepsValue })
+                    }}
+                  />
+                </label>
               </div>
+              <p className="field-hint">End locked to Steps</p>
+
+              <label className="field">
+                <span>CFG / seed</span>
+                <div className="field-row" style={{ display: 'flex', gap: 8 }}>
+                  <input
+                    type="number"
+                    min={0}
+                    max={30}
+                    step={0.1}
+                    value={draft.cfg}
+                    title="CFG"
+                    onChange={(e) => patchDraft({ cfg: Number(e.target.value) })}
+                  />
+                  <input
+                    type="number"
+                    step={1}
+                    value={draft.seed}
+                    title="Seed (−1 = random)"
+                    onChange={(e) => patchDraft({ seed: Number(e.target.value) })}
+                  />
+                </div>
+              </label>
+
+              <label className="field">
+                <span>Positive</span>
+                <textarea
+                  rows={2}
+                  value={draft.positive}
+                  onChange={(e) => patchDraft({ positive: e.target.value })}
+                />
+              </label>
+
+              <label className="field">
+                <span>Negative</span>
+                <textarea
+                  rows={3}
+                  value={draft.negative}
+                  onChange={(e) => patchDraft({ negative: e.target.value })}
+                />
+              </label>
             </div>
           </div>
 
@@ -722,7 +906,7 @@ export function UpscaleView({
               <button
                 type="button"
                 className="danger lora-test-generate-btn"
-                onClick={() => void abortUpscale()}
+                onClick={() => void abortFace()}
               >
                 Abort · {generateElapsedSec} Sec
               </button>
@@ -734,9 +918,9 @@ export function UpscaleView({
                 title={
                   videoGenerating ? 'Another panel is generating — Local AI is paused' : undefined
                 }
-                onClick={() => void runUpscale()}
+                onClick={() => void runFaceDetailer()}
               >
-                Upscale
+                Face Detailer
               </button>
             )}
           </div>
@@ -745,7 +929,7 @@ export function UpscaleView({
         <section className="generate-gallery upscale-result-pane">
           <div className="generate-gallery-header">
             <span>
-              {upscaleVideos.length} video{upscaleVideos.length === 1 ? '' : 's'}
+              {faceVideos.length} video{faceVideos.length === 1 ? '' : 's'}
               {sharedComfy.outputFolder ? ` · ${sharedComfy.outputFolder}` : ''}
             </span>
             <div className="generate-gallery-header-actions">
@@ -800,9 +984,9 @@ export function UpscaleView({
                   )}
                 </div>
                 <div className="face-compare-pane">
-                  <div className="face-compare-label">Upscaled</div>
+                  <div className="face-compare-label">Face fixed</div>
                   <video
-                    key={`up-${resultVideoPath}`}
+                    key={`face-${resultVideoPath}`}
                     ref={resultVideoRef}
                     src={window.api.toLocalUrl(resultVideoPath)}
                     controls
@@ -827,20 +1011,20 @@ export function UpscaleView({
               </div>
             ) : (
               <div className="generate-video-player-empty">
-                {upscaleVideos.length > 0
+                {faceVideos.length > 0
                   ? 'Select a video below to preview'
                   : sharedComfy.outputFolder.trim()
-                    ? 'No upscale videos in output folder yet'
+                    ? 'No face videos in output folder yet'
                     : 'Choose an output folder in Settings'}
               </div>
             )}
           </div>
 
           <div className="i2v-gallery" ref={resultGalleryRef}>
-            {upscaleVideos.length === 0 ? (
-              <div className="i2v-gallery-empty">No upscale videos</div>
+            {faceVideos.length === 0 ? (
+              <div className="i2v-gallery-empty">No face videos</div>
             ) : (
-              upscaleVideos.map((v) => (
+              faceVideos.map((v) => (
                 <button
                   key={v.path}
                   type="button"
@@ -877,6 +1061,7 @@ export function UpscaleView({
                       e.currentTarget.currentTime = 0
                     }}
                   />
+                  <span className="i2v-gallery-name">{v.name}</span>
                 </button>
               ))
             )}
