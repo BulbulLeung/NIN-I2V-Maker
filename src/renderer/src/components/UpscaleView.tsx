@@ -7,8 +7,9 @@ import {
   interruptComfyGeneration
 } from '../services/comfyUpscale'
 import { unloadLocalAiModels } from '../services/unloadLocalAi'
-import { useArrowListNav } from '../hooks/useArrowListNav'
+import { isTextEntryTarget, useArrowListNav } from '../hooks/useArrowListNav'
 import { useBackdropDismiss } from '../hooks/useBackdropDismiss'
+import { ConfirmDialog } from './ConfirmDialog'
 import { ResourceMonitorPane } from './ResourceMonitorPane'
 import { SearchableSelect } from './SearchableSelect'
 import { uniqueDirs, useComfyUi } from './ComfyUiContext'
@@ -132,6 +133,7 @@ export function UpscaleView({
   const [sourceFrameCount, setSourceFrameCount] = useState<number | null>(null)
   const [videoSize, setVideoSize] = useState<{ width: number; height: number } | null>(null)
   const [resultVideoPath, setResultVideoPath] = useState<string | null>(null)
+  const [confirmDeleteVideo, setConfirmDeleteVideo] = useState(false)
 
   const abortRef = useRef<AbortController | null>(null)
   const sharedRef = useRef(sharedComfy)
@@ -144,6 +146,9 @@ export function UpscaleView({
   const resultVideoRef = useRef<HTMLVideoElement | null>(null)
   const syncLockRef = useRef(false)
   const compareSourceByResultRef = useRef<Map<string, string>>(new Map())
+  const resultVideoPathRef = useRef(resultVideoPath)
+  resultVideoPathRef.current = resultVideoPath
+  const upscaleVideosRef = useRef<GalleryVideo[]>([])
 
   const patchDraft = useCallback(
     (partial: Partial<UpscaleGenerateDraft>) => {
@@ -183,6 +188,7 @@ export function UpscaleView({
     () => videos.filter((v) => isUpscaleVideoName(v.name)),
     [videos]
   )
+  upscaleVideosRef.current = upscaleVideos
 
   const compareSourcePath = useMemo(
     () =>
@@ -318,7 +324,12 @@ export function UpscaleView({
   })
 
   useArrowListNav({
-    enabled: active && !videoPickerOpen && !generating && upscaleVideoPaths.length > 0,
+    enabled:
+      active &&
+      !videoPickerOpen &&
+      !generating &&
+      !confirmDeleteVideo &&
+      upscaleVideoPaths.length > 0,
     items: upscaleVideoPaths,
     selectedId: resultVideoPath,
     onSelect: (id) => setResultVideoPath(id),
@@ -331,6 +342,51 @@ export function UpscaleView({
         )
       )
   })
+
+  useEffect(() => {
+    if (!active || videoPickerOpen || generating || confirmDeleteVideo) return
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key !== 'Delete') return
+      if (e.defaultPrevented) return
+      if (e.altKey || e.ctrlKey || e.metaKey) return
+      if (isTextEntryTarget(e.target)) return
+      if (
+        document.querySelector(
+          '.settings-modal, .confirm-modal, .setup-incomplete-modal, .generate-image-picker-modal'
+        )
+      ) {
+        return
+      }
+      if (!resultVideoPathRef.current) return
+      e.preventDefault()
+      e.stopPropagation()
+      setConfirmDeleteVideo(true)
+    }
+    window.addEventListener('keydown', onKey, true)
+    return () => window.removeEventListener('keydown', onKey, true)
+  }, [active, videoPickerOpen, generating, confirmDeleteVideo])
+
+  const performDeleteVideo = useCallback(async () => {
+    const path = resultVideoPathRef.current
+    setConfirmDeleteVideo(false)
+    if (!path) return
+    const res = await window.api.trashItem(path)
+    if (!res.ok) {
+      onStatus(res.error || 'Failed to move video to Recycle Bin', true)
+      return
+    }
+    compareSourceByResultRef.current.delete(path)
+    const list = upscaleVideosRef.current
+    const idx = list.findIndex((v) => v.path === path)
+    const nextList = list.filter((v) => v.path !== path)
+    setVideos((prev) => prev.filter((v) => v.path !== path))
+    const nextPath = nextList[idx]?.path ?? nextList[idx - 1]?.path ?? null
+    setResultVideoPath(nextPath)
+    if (draftRef.current.selectedVideoPath === path) {
+      patchDraft({ selectedVideoPath: '' })
+    }
+    onStatus(`Moved to Recycle Bin: ${basenamePath(path)}`)
+  }, [onStatus, patchDraft])
 
   useEffect(() => {
     if (!active || !videoPickerOpen) return
@@ -954,6 +1010,18 @@ export function UpscaleView({
           </div>
         </div>
       ) : null}
+
+      <ConfirmDialog
+        open={confirmDeleteVideo}
+        title="Delete video"
+        message={
+          resultVideoPath
+            ? `Move this video to the Recycle Bin?\n${basenamePath(resultVideoPath)}`
+            : 'Move this video to the Recycle Bin?'
+        }
+        onCancel={() => setConfirmDeleteVideo(false)}
+        onConfirm={() => void performDeleteVideo()}
+      />
     </div>
   )
 }

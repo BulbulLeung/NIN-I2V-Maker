@@ -443,7 +443,7 @@ export function App() {
               aria-selected={settings.activeView === 'faceDetailer'}
               onClick={() => setView('faceDetailer')}
             >
-              Face
+              Face Detailer
             </button>
           </div>
           <ComfyUiToolbarControls locked={videoGenerating} />

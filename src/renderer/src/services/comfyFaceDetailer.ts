@@ -54,7 +54,10 @@ export const FACE_NODE = {
   paste: '27',
   saveVideo: '28',
   /** Speed LoRA (low) after ModelSamplingSD3 — same as Video Gen. */
-  loraLow: '33'
+  loraLow: '33',
+  /** Guard empty SEGS so ImpactFrom_SEG_ELT is not executed with no items. */
+  hasFaces: '34',
+  pickOutput: '35'
 } as const
 
 export interface ComfyFaceDetailerParams {
@@ -109,6 +112,8 @@ export interface FaceDetailerNodeCaps {
   hasUpscaleModelLoader: boolean
   hasImageUpscaleWithModel: boolean
   hasWanImageToVideo: boolean
+  hasIsNotEmptySegs: boolean
+  hasConditionalBranch: boolean
   bboxModelOptions: string[]
   videoCaps: VideoNodeCaps
 }
@@ -176,6 +181,8 @@ export async function probeFaceDetailerNodeCaps(baseUrl: string): Promise<FaceDe
     hasUpscaleModelLoader: false,
     hasImageUpscaleWithModel: false,
     hasWanImageToVideo: false,
+    hasIsNotEmptySegs: false,
+    hasConditionalBranch: false,
     bboxModelOptions: [],
     videoCaps
   }
@@ -195,7 +202,9 @@ export async function probeFaceDetailerNodeCaps(baseUrl: string): Promise<FaceDe
     'ImageFromBatch',
     'UpscaleModelLoader',
     'ImageUpscaleWithModel',
-    'WanImageToVideo'
+    'WanImageToVideo',
+    'ImpactIsNotEmptySEGS',
+    'ImpactConditionalBranch'
   ] as const
   try {
     const results = await Promise.all(
@@ -228,6 +237,8 @@ export async function probeFaceDetailerNodeCaps(baseUrl: string): Promise<FaceDe
         if (n === 'UpscaleModelLoader') caps.hasUpscaleModelLoader = true
         if (n === 'ImageUpscaleWithModel') caps.hasImageUpscaleWithModel = true
         if (n === 'WanImageToVideo') caps.hasWanImageToVideo = true
+        if (n === 'ImpactIsNotEmptySEGS') caps.hasIsNotEmptySegs = true
+        if (n === 'ImpactConditionalBranch') caps.hasConditionalBranch = true
       } catch {
         /* ignore */
       }
@@ -593,13 +604,34 @@ export function buildFaceDetailerWorkflow(
     }
   }
 
+  // Empty SEGS → ImpactFrom_SEG_ELT crashes (missing seg_elt). Lazy-branch so the
+  // refine path is skipped and we save the original frames instead.
+  let saveImages: [string, number] = [FACE_NODE.paste, 0]
+  if (caps.hasIsNotEmptySegs && caps.hasConditionalBranch) {
+    graph[FACE_NODE.hasFaces] = {
+      class_type: 'ImpactIsNotEmptySEGS',
+      inputs: {
+        segs: [FACE_NODE.setDefaultSegs, 0]
+      }
+    }
+    graph[FACE_NODE.pickOutput] = {
+      class_type: 'ImpactConditionalBranch',
+      inputs: {
+        cond: [FACE_NODE.hasFaces, 0],
+        tt_value: [FACE_NODE.paste, 0],
+        ff_value: [FACE_NODE.loadVideo, 0]
+      }
+    }
+    saveImages = [FACE_NODE.pickOutput, 0]
+  }
+
   const format = pickFormat(p, caps.videoCaps)
   const codec = pickCodec(p, caps.videoCaps)
   const crf = Math.min(63, Math.max(0, Math.round(p.videoCrf ?? 23)))
   graph[FACE_NODE.saveVideo] = {
     class_type: 'NINI2VSaveVideo',
     inputs: {
-      images: [FACE_NODE.paste, 0],
+      images: saveImages,
       fps: Math.max(1, p.fps),
       filename_prefix: p.savePrefix || 'face/Wan2.2',
       filename_suffix: '_face',
@@ -611,6 +643,22 @@ export function buildFaceDetailerWorkflow(
   }
 
   return graph
+}
+
+function formatFaceDetailerExecError(nodeType: string, exceptionMessage: string): string {
+  const nt = (nodeType || '').trim()
+  const msg = (exceptionMessage || '').trim()
+  if (
+    /ImpactFrom_SEG_ELT/i.test(nt) &&
+    /missing .+ argument:\s*'?seg_elt'?/i.test(msg)
+  ) {
+    return (
+      'No faces left after detection/filtering (empty SEGS). ' +
+      'Lower detector threshold or Min face detect size, or try another YOLO face model.'
+    )
+  }
+  if (nt || msg) return `${nt || 'ComfyUI'}: ${msg || 'unknown'}`
+  return 'unknown'
 }
 
 async function waitForPromptDone(
@@ -658,11 +706,12 @@ async function waitForPromptDone(
                 nodeType = String(detail.node_type ?? '')
               }
             }
-            const detail =
-              exceptionMessage || nodeType
-                ? ` (${nodeType}: ${exceptionMessage || 'unknown'})`
-                : ''
-            throw new Error(`ComfyUI reported an error while face detailing${detail}`)
+            const detail = formatFaceDetailerExecError(nodeType, exceptionMessage)
+            throw new Error(
+              detail === 'unknown'
+                ? 'ComfyUI reported an error while face detailing'
+                : `ComfyUI reported an error while face detailing (${detail})`
+            )
           }
           const statusStrOk = statusStr === 'success'
           const completed = entry.status?.completed === true || statusStrOk
@@ -733,6 +782,8 @@ function describeNode(nodeId: string | null | undefined): string {
     [FACE_NODE.sampler]: 'Refine faces',
     [FACE_NODE.decode]: 'Decode faces',
     [FACE_NODE.paste]: 'Paste faces',
+    [FACE_NODE.hasFaces]: 'Check faces found',
+    [FACE_NODE.pickOutput]: 'Pick face or original',
     [FACE_NODE.saveVideo]: 'Save video'
   }
   return map[nodeId] || `Node ${nodeId}`

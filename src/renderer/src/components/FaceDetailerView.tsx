@@ -8,8 +8,9 @@ import {
   probeFaceDetailerNodeCaps
 } from '../services/comfyFaceDetailer'
 import { unloadLocalAiModels } from '../services/unloadLocalAi'
-import { useArrowListNav } from '../hooks/useArrowListNav'
+import { isTextEntryTarget, useArrowListNav } from '../hooks/useArrowListNav'
 import { useBackdropDismiss } from '../hooks/useBackdropDismiss'
+import { ConfirmDialog } from './ConfirmDialog'
 import { ResourceMonitorPane } from './ResourceMonitorPane'
 import { SearchableSelect } from './SearchableSelect'
 import { uniqueDirs, useComfyUi } from './ComfyUiContext'
@@ -130,6 +131,7 @@ export function FaceDetailerView({
   const [sourceFps, setSourceFps] = useState(16)
   const [sourceFrameCount, setSourceFrameCount] = useState<number | null>(null)
   const [resultVideoPath, setResultVideoPath] = useState<string | null>(null)
+  const [confirmDeleteVideo, setConfirmDeleteVideo] = useState(false)
 
   const abortRef = useRef<AbortController | null>(null)
   const sharedRef = useRef(sharedComfy)
@@ -142,6 +144,9 @@ export function FaceDetailerView({
   const resultVideoRef = useRef<HTMLVideoElement | null>(null)
   const syncLockRef = useRef(false)
   const compareSourceByResultRef = useRef<Map<string, string>>(new Map())
+  const resultVideoPathRef = useRef(resultVideoPath)
+  resultVideoPathRef.current = resultVideoPath
+  const faceVideosRef = useRef<GalleryVideo[]>([])
 
   const patchDraft = useCallback(
     (partial: Partial<FaceDetailerDraft>) => {
@@ -178,6 +183,7 @@ export function FaceDetailerView({
   }, [])
 
   const faceVideos = useMemo(() => videos.filter((v) => isFaceVideoName(v.name)), [videos])
+  faceVideosRef.current = faceVideos
 
   const compareSourcePath = useMemo(
     () =>
@@ -352,7 +358,12 @@ export function FaceDetailerView({
   })
 
   useArrowListNav({
-    enabled: active && !videoPickerOpen && !generating && faceVideoPaths.length > 0,
+    enabled:
+      active &&
+      !videoPickerOpen &&
+      !generating &&
+      !confirmDeleteVideo &&
+      faceVideoPaths.length > 0,
     items: faceVideoPaths,
     selectedId: resultVideoPath,
     onSelect: (id) => setResultVideoPath(id),
@@ -365,6 +376,51 @@ export function FaceDetailerView({
         )
       )
   })
+
+  useEffect(() => {
+    if (!active || videoPickerOpen || generating || confirmDeleteVideo) return
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key !== 'Delete') return
+      if (e.defaultPrevented) return
+      if (e.altKey || e.ctrlKey || e.metaKey) return
+      if (isTextEntryTarget(e.target)) return
+      if (
+        document.querySelector(
+          '.settings-modal, .confirm-modal, .setup-incomplete-modal, .generate-image-picker-modal'
+        )
+      ) {
+        return
+      }
+      if (!resultVideoPathRef.current) return
+      e.preventDefault()
+      e.stopPropagation()
+      setConfirmDeleteVideo(true)
+    }
+    window.addEventListener('keydown', onKey, true)
+    return () => window.removeEventListener('keydown', onKey, true)
+  }, [active, videoPickerOpen, generating, confirmDeleteVideo])
+
+  const performDeleteVideo = useCallback(async () => {
+    const path = resultVideoPathRef.current
+    setConfirmDeleteVideo(false)
+    if (!path) return
+    const res = await window.api.trashItem(path)
+    if (!res.ok) {
+      onStatus(res.error || 'Failed to move video to Recycle Bin', true)
+      return
+    }
+    compareSourceByResultRef.current.delete(path)
+    const list = faceVideosRef.current
+    const idx = list.findIndex((v) => v.path === path)
+    const nextList = list.filter((v) => v.path !== path)
+    setVideos((prev) => prev.filter((v) => v.path !== path))
+    const nextPath = nextList[idx]?.path ?? nextList[idx - 1]?.path ?? null
+    setResultVideoPath(nextPath)
+    if (draftRef.current.selectedVideoPath === path) {
+      patchDraft({ selectedVideoPath: '' })
+    }
+    onStatus(`Moved to Recycle Bin: ${basenamePath(path)}`)
+  }, [onStatus, patchDraft])
 
   useEffect(() => {
     if (!active || !videoPickerOpen) return
@@ -469,7 +525,7 @@ export function FaceDetailerView({
 
       const speedLowOn = Boolean(d.loraLowEnabled && d.loraLowPath.trim())
       report(
-        `ComfyUI Face Detailer: thresh ${d.bboxThreshold}, steps ${d.steps} (denoise start at ${d.startAtStep}), fps ${sourceFps}`
+        `ComfyUI Face Detailer: thresh ${d.bboxThreshold}, steps ${d.steps} (denoise start at step ${d.startAtStep}), fps ${sourceFps}`
       )
       const result = await generateFaceDetailerWithComfy(
         {
@@ -791,7 +847,7 @@ export function FaceDetailerView({
               </label>
 
               <label className="field">
-                <span>Min face width</span>
+                <span>Min face detect size</span>
                 <input
                   type="number"
                   min={8}
@@ -838,7 +894,7 @@ export function FaceDetailerView({
                   />
                 </label>
                 <label className="field generate-refiner-field">
-                  <span>{`denoise start at ${startAtValue} steps`}</span>
+                  <span>{`denoise start at step ${startAtValue}`}</span>
                   <input
                     type="range"
                     min={0}
@@ -1139,6 +1195,18 @@ export function FaceDetailerView({
           </div>
         </div>
       ) : null}
+
+      <ConfirmDialog
+        open={confirmDeleteVideo}
+        title="Delete video"
+        message={
+          resultVideoPath
+            ? `Move this video to the Recycle Bin?\n${basenamePath(resultVideoPath)}`
+            : 'Move this video to the Recycle Bin?'
+        }
+        onCancel={() => setConfirmDeleteVideo(false)}
+        onConfirm={() => void performDeleteVideo()}
+      />
     </div>
   )
 }
