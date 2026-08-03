@@ -115,6 +115,7 @@ class NINI2VSaveVideo:
             },
             "optional": {
                 "filename_suffix": ("STRING", {"default": ""}),
+                "remove_last_frame": ("BOOLEAN", {"default": False}),
             },
             "hidden": {
                 "prompt": "PROMPT",
@@ -138,6 +139,7 @@ class NINI2VSaveVideo:
         bit_depth: int,
         crf: float,
         filename_suffix: str = "",
+        remove_last_frame: bool = False,
         prompt: Any = None,
         extra_pnginfo: Any = None,
     ):
@@ -145,6 +147,9 @@ class NINI2VSaveVideo:
 
         if images is None or images.shape[0] == 0:
             raise ValueError("NINI2VSaveVideo: no frames to encode")
+
+        if remove_last_frame and images.shape[0] > 1:
+            images = images[:-1]
 
         height = int(images.shape[1])
         width = int(images.shape[2])

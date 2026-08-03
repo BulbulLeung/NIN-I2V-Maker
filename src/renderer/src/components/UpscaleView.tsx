@@ -318,6 +318,7 @@ export function UpscaleView({
             ? basenamePath(d.interpolationModelPath)
             : undefined,
           fps: sourceFps,
+          removeLastFrame: Boolean(d.removeLastFrame),
           savePrefix: 'upscale/Wan2.2',
           videoFormat: s.videoFormat,
           videoCodec: s.videoCodec,
@@ -548,11 +549,28 @@ export function UpscaleView({
                     if (sourceFrameCount == null || sourceFrameCount <= 0) {
                       return `… > … frames`
                     }
-                    const to = Math.max(1, sourceFrameCount * scale)
+                    let to = Math.max(1, sourceFrameCount * scale)
+                    if (draft.removeLastFrame && to > 1) to -= 1
                     return `${sourceFrameCount} > ${to} frames`
                   })()}
                 </p>
               </label>
+
+              <div
+                className={`generate-aspect-toggle lora-toggle${draft.removeLastFrame ? ' is-on' : ''}`}
+              >
+                <span className="lora-toggle-label">Remove last frame</span>
+                <button
+                  type="button"
+                  className="lora-switch"
+                  role="switch"
+                  aria-checked={draft.removeLastFrame}
+                  aria-label="Remove last frame"
+                  onClick={() => patchDraft({ removeLastFrame: !draft.removeLastFrame })}
+                >
+                  <span className="lora-switch-knob" />
+                </button>
+              </div>
             </div>
           </div>
 
@@ -664,6 +682,16 @@ export function UpscaleView({
                     onClick={() => {
                       patchDraft({ selectedVideoPath: v.path })
                       setVideoPickerOpen(false)
+                    }}
+                    onMouseEnter={(e) => {
+                      const video = e.currentTarget.querySelector('video')
+                      if (video) void video.play().catch(() => undefined)
+                    }}
+                    onMouseLeave={(e) => {
+                      const video = e.currentTarget.querySelector('video')
+                      if (!video) return
+                      video.pause()
+                      video.currentTime = 0
                     }}
                   >
                     <video

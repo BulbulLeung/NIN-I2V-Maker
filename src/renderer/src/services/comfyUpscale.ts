@@ -1,7 +1,7 @@
 /**
  * Upscale / Interpolation post-process workflow for gallery videos.
  * Load video → optional UpscaleModelLoader+ImageUpscaleWithModel →
- * optional FrameInterpolate → NINI2VSaveVideo.
+ * optional FrameInterpolate → optional drop last frame → NINI2VSaveVideo.
  */
 
 import {
@@ -45,6 +45,8 @@ export interface ComfyUpscaleParams {
   interpolationModelName?: string
   /** Source video fps (before interpolation). */
   fps: number
+  /** Drop the last frame after upscale/interpolation, before encode. */
+  removeLastFrame?: boolean
   savePrefix?: string
   videoFormat?: VideoSaveFormat
   videoCodec?: VideoSaveCodec
@@ -271,18 +273,22 @@ export function buildUpscaleWorkflow(
   const format = pickFormat(p, caps.videoCaps)
   const codec = pickCodec(p, caps.videoCaps)
   const crf = Math.min(63, Math.max(0, Math.round(p.videoCrf ?? 23)))
+  const saveInputs: Record<string, unknown> = {
+    images: [imagesNode, 0],
+    fps: outFps,
+    filename_prefix: p.savePrefix || 'upscale/Wan2.2',
+    filename_suffix: '_upscale',
+    format,
+    codec,
+    bit_depth: p.videoBitDepth === 10 ? 10 : 8,
+    crf
+  }
+  if (p.removeLastFrame) {
+    saveInputs.remove_last_frame = true
+  }
   graph[UPSCALE_NODE.saveVideo] = {
     class_type: 'NINI2VSaveVideo',
-    inputs: {
-      images: [imagesNode, 0],
-      fps: outFps,
-      filename_prefix: p.savePrefix || 'upscale/Wan2.2',
-      filename_suffix: '_upscale',
-      format,
-      codec,
-      bit_depth: p.videoBitDepth === 10 ? 10 : 8,
-      crf
-    }
+    inputs: saveInputs
   }
 
   return graph

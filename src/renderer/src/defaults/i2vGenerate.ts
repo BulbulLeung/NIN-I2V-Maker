@@ -54,6 +54,8 @@ export interface UpscaleGenerateDraft {
   resolutionPreset: string
   /** 1 = skip interpolation */
   interpolationScale: number
+  /** After upscale + interpolation, drop the last frame before save. */
+  removeLastFrame: boolean
 }
 
 export type VideoSaveFormat = 'auto' | 'mp4' | 'webm' | 'mkv'
@@ -208,7 +210,8 @@ export const DEFAULT_UPSCALE_GENERATE_DRAFT: UpscaleGenerateDraft = {
   upscaleModelPath: '',
   interpolationModelPath: '',
   resolutionPreset: '540p',
-  interpolationScale: 1
+  interpolationScale: 1,
+  removeLastFrame: false
 }
 
 export const DEFAULT_VIDEO_PARAMS: VideoGenerateParams = {
@@ -437,7 +440,11 @@ export function normalizeUpscaleGenerateDraft(raw: unknown): UpscaleGenerateDraf
       DEFAULT_UPSCALE_GENERATE_DRAFT.interpolationScale,
       1,
       16
-    )
+    ),
+    removeLastFrame:
+      typeof r.removeLastFrame === 'boolean'
+        ? r.removeLastFrame
+        : DEFAULT_UPSCALE_GENERATE_DRAFT.removeLastFrame
   }
 }
 
