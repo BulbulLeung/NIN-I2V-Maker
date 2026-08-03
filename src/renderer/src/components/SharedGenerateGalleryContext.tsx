@@ -68,11 +68,10 @@ export function SharedGenerateGalleryProvider({
         onStatus(res.error || 'Failed to list gallery videos', true)
         return
       }
-      setVideos(res.videos)
+      const listed = res.videos.filter((v) => !/upscale/i.test(v.name))
+      setVideos(listed)
       setSelectedVideo((prev) =>
-        prev && res.videos.some((v) => v.path === prev)
-          ? prev
-          : (res.videos[0]?.path ?? null)
+        prev && listed.some((v) => v.path === prev) ? prev : (listed[0]?.path ?? null)
       )
     } catch (err) {
       onStatus(err instanceof Error ? err.message : String(err), true)

@@ -37,6 +37,10 @@ interface GalleryVideo {
   mtimeMs: number
 }
 
+function isUpscaleVideoName(name: string): boolean {
+  return /upscale/i.test(name)
+}
+
 export function UpscaleView({
   active = true,
   settings,
@@ -66,6 +70,7 @@ export function UpscaleView({
   const draftRef = useRef(draft)
   draftRef.current = draft
   const videoPickerListRef = useRef<HTMLDivElement | null>(null)
+  const resultGalleryRef = useRef<HTMLDivElement | null>(null)
 
   const patchDraft = useCallback(
     (partial: Partial<UpscaleGenerateDraft>) => {
@@ -81,6 +86,7 @@ export function UpscaleView({
     const folder = sharedRef.current.outputFolder.trim()
     if (!folder) {
       setVideos([])
+      setResultVideoPath(null)
       return
     }
     try {
@@ -90,10 +96,20 @@ export function UpscaleView({
         return
       }
       setVideos(res.videos)
+      const upscaleList = res.videos.filter((v) => isUpscaleVideoName(v.name))
+      setResultVideoPath((prev) => {
+        if (prev && upscaleList.some((v) => v.path === prev)) return prev
+        return upscaleList[0]?.path ?? null
+      })
     } catch {
       setVideos([])
     }
   }, [])
+
+  const upscaleVideos = useMemo(
+    () => videos.filter((v) => isUpscaleVideoName(v.name)),
+    [videos]
+  )
 
   useEffect(() => {
     if (!active) return
@@ -176,6 +192,7 @@ export function UpscaleView({
   }, [sharedComfy.frameInterpModelFolder])
 
   const videoPaths = useMemo(() => videos.map((v) => v.path), [videos])
+  const upscaleVideoPaths = useMemo(() => upscaleVideos.map((v) => v.path), [upscaleVideos])
 
   useArrowListNav({
     enabled: active && videoPickerOpen && videoPaths.length > 0,
@@ -188,6 +205,21 @@ export function UpscaleView({
     columns: 'auto',
     containerRef: videoPickerListRef,
     shouldIgnore: () => Boolean(document.querySelector('.settings-modal, .confirm-modal'))
+  })
+
+  useArrowListNav({
+    enabled: active && !videoPickerOpen && !generating && upscaleVideoPaths.length > 0,
+    items: upscaleVideoPaths,
+    selectedId: resultVideoPath,
+    onSelect: (id) => setResultVideoPath(id),
+    columns: 1,
+    containerRef: resultGalleryRef,
+    shouldIgnore: () =>
+      Boolean(
+        document.querySelector(
+          '.settings-modal, .confirm-modal, .setup-incomplete-modal, .generate-image-picker-modal'
+        )
+      )
   })
 
   useEffect(() => {
@@ -602,12 +634,13 @@ export function UpscaleView({
         <section className="generate-gallery upscale-result-pane">
           <div className="generate-gallery-header">
             <span>
-              {resultVideoPath
-                ? basenamePath(resultVideoPath)
-                : 'Upscale result'}
+              {upscaleVideos.length} video{upscaleVideos.length === 1 ? '' : 's'}
               {sharedComfy.outputFolder ? ` · ${sharedComfy.outputFolder}` : ''}
             </span>
             <div className="generate-gallery-header-actions">
+              <button type="button" onClick={() => void refreshGallery()}>
+                Refresh
+              </button>
               <button
                 type="button"
                 disabled={!sharedComfy.outputFolder.trim()}
@@ -631,8 +664,44 @@ export function UpscaleView({
               />
             ) : (
               <div className="generate-video-player-empty">
-                Upscale result will appear here when finished
+                {upscaleVideos.length > 0
+                  ? 'Select a video below to preview'
+                  : sharedComfy.outputFolder.trim()
+                    ? 'No upscale videos in output folder yet'
+                    : 'Choose an output folder in Settings'}
               </div>
+            )}
+          </div>
+
+          <div className="i2v-gallery" ref={resultGalleryRef}>
+            {upscaleVideos.length === 0 ? (
+              <div className="i2v-gallery-empty">No upscale videos</div>
+            ) : (
+              upscaleVideos.map((v) => (
+                <button
+                  key={v.path}
+                  type="button"
+                  data-nav-id={v.path}
+                  className={`i2v-gallery-item${v.path === resultVideoPath ? ' active' : ''}`}
+                  onClick={() => setResultVideoPath(v.path)}
+                  title={v.name}
+                >
+                  <video
+                    src={window.api.toLocalUrl(v.path)}
+                    muted
+                    loop
+                    playsInline
+                    preload="metadata"
+                    onMouseEnter={(e) => {
+                      void e.currentTarget.play().catch(() => undefined)
+                    }}
+                    onMouseLeave={(e) => {
+                      e.currentTarget.pause()
+                      e.currentTarget.currentTime = 0
+                    }}
+                  />
+                </button>
+              ))
             )}
           </div>
         </section>
